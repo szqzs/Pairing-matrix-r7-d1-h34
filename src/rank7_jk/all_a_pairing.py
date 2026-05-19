@@ -7,6 +7,8 @@ row has exactly one defect: either one ``f_r`` or one ``gamma_rs``.
 
 from __future__ import annotations
 
+from collections import defaultdict
+from dataclasses import dataclass, field
 from functools import lru_cache
 from math import factorial
 from typing import Sequence, Tuple
@@ -17,7 +19,7 @@ from .config import FormulaConfig, RANK7_G2_D1
 from .exterior import ExteriorAlgebra
 from .invariants import InvariantMonomial
 from .mod_arith import require_prime
-from .residue_transition import residue_poly_mod
+from .residue_transition import residue_monomial_mod, residue_poly_mod
 from .sparse_poly import SparsePoly, add, clean, constant, mul, pow_poly
 
 DerivOrders = Tuple[int, ...]
@@ -42,6 +44,20 @@ def c18_all_a_pairing_column(
     )
 
 
+def c18_all_a_pairing_column_moment(
+    index: int,
+    column: H62TestColumn,
+    rows: Sequence[C18SourceRow],
+    prime: int,
+    *,
+    config: FormulaConfig = RANK7_G2_D1,
+) -> Tuple[int, ...]:
+    """Evaluate one all-a column with the cached residue-moment engine."""
+
+    evaluator = _cached_moment_batch_evaluator(config, tuple(rows), require_prime(prime))
+    return evaluator.column_vector(index, column)
+
+
 def all_a_pairing_value(
     config: FormulaConfig,
     source: InvariantMonomial,
@@ -54,6 +70,20 @@ def all_a_pairing_value(
     if any(test.f_exp) or any(test.gamma_exp):
         raise ValueError("the specialized all-a evaluator requires an all-a test")
     return all_a_pairing_total_mod(config, source * test, prime=prime)
+
+
+def all_a_pairing_value_moment(
+    config: FormulaConfig,
+    source: InvariantMonomial,
+    test: InvariantMonomial,
+    *,
+    prime: int | None = None,
+) -> int:
+    """Evaluate a one-defect source against an all-a test with cached moments."""
+
+    if any(test.f_exp) or any(test.gamma_exp):
+        raise ValueError("the specialized all-a evaluator requires an all-a test")
+    return all_a_pairing_total_moment_mod(config, source * test, prime=prime)
 
 
 def all_a_pairing_total_mod(
@@ -93,6 +123,227 @@ def all_a_pairing_total_mod(
     for exp in total.f_exp:
         scale_factor = scale_factor * factorial(int(exp)) % p
     return scale_factor * value % p
+
+
+def all_a_pairing_total_moment_mod(
+    config: FormulaConfig,
+    total: InvariantMonomial,
+    *,
+    prime: int | None = None,
+) -> int:
+    """Evaluate a one-defect all-a total monomial via cached residue moments."""
+
+    p = require_prime(config.primary_prime if prime is None else prime)
+    _validate_total(config, total)
+    return _pairing_from_parts_moment(
+        config,
+        tuple(total.a_exp),
+        tuple(total.f_exp),
+        tuple(total.gamma_exp),
+        p,
+    )
+
+
+@dataclass
+class AllAMomentBatchEvaluator:
+    """Batch all-a column evaluator with shared row plans and cached kernels."""
+
+    config: FormulaConfig
+    rows: Tuple[C18SourceRow, ...]
+    prime: int
+    row_plans: Tuple["AllARowPlan", ...] = field(init=False)
+    rows_by_defect: dict[str, Tuple[int, ...]] = field(init=False)
+
+    def __post_init__(self) -> None:
+        p = require_prime(self.prime)
+        object.__setattr__(self, "prime", p)
+        plans = tuple(
+            AllARowPlan.from_row(self.config, row_index, row)
+            for row_index, row in enumerate(self.rows)
+        )
+        object.__setattr__(self, "row_plans", plans)
+
+        grouped: dict[str, list[int]] = defaultdict(list)
+        for plan in plans:
+            grouped[plan.defect_id].append(plan.row_index)
+            _shared_kernel_terms(self.config, plan.target_delta, plan.gamma_exp, p)
+        object.__setattr__(
+            self,
+            "rows_by_defect",
+            {key: tuple(indices) for key, indices in sorted(grouped.items())},
+        )
+
+    def column_vector(self, index: int, column: H62TestColumn) -> Tuple[int, ...]:
+        del index
+        if column.kind != "all_a":
+            raise ValueError("AllAMomentBatchEvaluator expects an all-a test column")
+        column_a_exp = tuple(column.monomial.a_exp)
+        return tuple(
+            _pairing_from_parts_moment(
+                self.config,
+                _add_exp(plan.a_exp, column_a_exp),
+                plan.f_exp,
+                plan.gamma_exp,
+                self.prime,
+            )
+            for plan in self.row_plans
+        )
+
+
+@dataclass(frozen=True)
+class AllARowPlan:
+    row_index: int
+    a_exp: Tuple[int, ...]
+    f_exp: Tuple[int, ...]
+    gamma_exp: Tuple[int, ...]
+    target_delta: Tuple[int, ...]
+    defect_id: str
+
+    @classmethod
+    def from_row(
+        cls,
+        config: FormulaConfig,
+        row_index: int,
+        row: C18SourceRow,
+    ) -> "AllARowPlan":
+        monomial = row.monomial
+        f_exp = tuple(monomial.f_exp)
+        gamma_exp = tuple(monomial.gamma_exp)
+        if sum(f_exp) + sum(gamma_exp) != 1:
+            raise NotImplementedError("all-a row plans require exactly one defect")
+        return cls(
+            row_index=int(row_index),
+            a_exp=tuple(monomial.a_exp),
+            f_exp=f_exp,
+            gamma_exp=gamma_exp,
+            target_delta=tuple(f_exp[1:]),
+            defect_id=_defect_id(config, f_exp, gamma_exp),
+        )
+
+
+def precompute_all_a_defect_kernels(
+    config: FormulaConfig,
+    rows: Sequence[C18SourceRow],
+    *,
+    prime: int | None = None,
+) -> Tuple[str, ...]:
+    """Warm the one-defect kernel cache for the defects appearing in ``rows``."""
+
+    p = require_prime(config.primary_prime if prime is None else prime)
+    defect_ids = []
+    seen = set()
+    for row in rows:
+        plan = AllARowPlan.from_row(config, len(defect_ids), row)
+        if plan.defect_id in seen:
+            continue
+        _shared_kernel_terms(config, plan.target_delta, plan.gamma_exp, p)
+        seen.add(plan.defect_id)
+        defect_ids.append(plan.defect_id)
+    return tuple(defect_ids)
+
+
+def all_a_cache_info() -> dict[str, dict[str, int]]:
+    """Return JSON-friendly cache counters for all-a performance probes."""
+
+    return {
+        "batch_evaluator": _cache_info_dict(_cached_moment_batch_evaluator.cache_info()),
+        "kernel_terms": _cache_info_dict(_shared_kernel_terms.cache_info()),
+        "moment": _cache_info_dict(_moment_mod.cache_info()),
+        "monomial_residue": _cache_info_dict(_residue_monomial_cached.cache_info()),
+        "tau_power": _cache_info_dict(_tau_power_mod.cache_info()),
+    }
+
+
+def clear_all_a_caches() -> None:
+    """Clear all-a evaluator caches for controlled profiling tests."""
+
+    _cached_moment_batch_evaluator.cache_clear()
+    _shared_kernel_terms.cache_clear()
+    _moment_mod.cache_clear()
+    _residue_monomial_cached.cache_clear()
+    _tau_power_mod.cache_clear()
+
+
+@lru_cache(maxsize=16)
+def _cached_moment_batch_evaluator(
+    config: FormulaConfig,
+    rows: Tuple[C18SourceRow, ...],
+    prime: int,
+) -> AllAMomentBatchEvaluator:
+    return AllAMomentBatchEvaluator(config=config, rows=rows, prime=prime)
+
+
+def _pairing_from_parts_moment(
+    config: FormulaConfig,
+    a_exp: Tuple[int, ...],
+    f_exp: Tuple[int, ...],
+    gamma_exp: Tuple[int, ...],
+    prime: int,
+) -> int:
+    p = require_prime(prime)
+    target_delta = tuple(int(exp) for exp in f_exp[1:])
+    shared_terms = _shared_kernel_terms(config, target_delta, tuple(gamma_exp), p)
+    if not shared_terms:
+        return 0
+
+    value = 0
+    for deriv_orders, shared_items in shared_terms:
+        for beta, coeff in shared_items:
+            if coeff % p:
+                value = (
+                    value
+                    + coeff * _moment_mod(config, tuple(a_exp), beta, deriv_orders, p)
+                ) % p
+
+    scale_factor = int(config.collapsed_prefactor) % p
+    for exp in f_exp:
+        scale_factor = scale_factor * factorial(int(exp)) % p
+    return scale_factor * value % p
+
+
+@lru_cache(maxsize=None)
+def _moment_mod(
+    config: FormulaConfig,
+    a_exp: Tuple[int, ...],
+    beta: Tuple[int, ...],
+    deriv_orders: DerivOrders,
+    prime: int,
+) -> int:
+    p = require_prime(prime)
+    if len(beta) != config.y_count:
+        raise ValueError("kernel monomial dimension does not match the formula config")
+    value = 0
+    for alpha, coeff in _tau_power_mod(config, tuple(a_exp), p):
+        shifted = tuple(alpha[idx] + beta[idx] for idx in range(config.y_count))
+        value = (
+            value
+            + coeff
+            * _residue_monomial_cached(
+                config.rank,
+                shifted,
+                tuple(deriv_orders),
+                config.root_denominator_power,
+                p,
+            )
+        ) % p
+    return value
+
+
+@lru_cache(maxsize=None)
+def _residue_monomial_cached(
+    rank: int,
+    alpha: Tuple[int, ...],
+    deriv_orders: DerivOrders,
+    root_power: int,
+    prime: int,
+) -> int:
+    return residue_monomial_mod(
+        int(rank),
+        alpha,
+        deriv_orders,
+        prime=require_prime(prime),
+        root_power=int(root_power),
+    )
 
 
 def _validate_total(config: FormulaConfig, total: InvariantMonomial) -> None:
@@ -265,3 +516,32 @@ def _tau_power_mod(
 
 def _zero_deriv(config: FormulaConfig) -> DerivOrders:
     return tuple(0 for _ in range(config.y_count))
+
+
+def _add_exp(left: Tuple[int, ...], right: Tuple[int, ...]) -> Tuple[int, ...]:
+    if len(left) != len(right):
+        raise ValueError("exponent tuples must have the same length")
+    return tuple(int(a) + int(b) for a, b in zip(left, right))
+
+
+def _defect_id(
+    config: FormulaConfig,
+    f_exp: Tuple[int, ...],
+    gamma_exp: Tuple[int, ...],
+) -> str:
+    for exp, r in zip(f_exp, config.class_ranks):
+        if exp:
+            return f"f{r}"
+    for exp, (r, s) in zip(gamma_exp, config.gamma_labels):
+        if exp:
+            return f"gamma{r}{s}"
+    return "none"
+
+
+def _cache_info_dict(info) -> dict[str, int]:
+    return {
+        "hits": int(info.hits),
+        "misses": int(info.misses),
+        "maxsize": -1 if info.maxsize is None else int(info.maxsize),
+        "currsize": int(info.currsize),
+    }

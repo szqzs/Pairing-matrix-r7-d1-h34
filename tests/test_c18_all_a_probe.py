@@ -1,9 +1,13 @@
+import json
+
 import pytest
 
 from rank7_jk.c18_all_a_probe import (
     actual_all_a_column,
     evaluator_by_name,
+    main,
     run_all_a_probe,
+    slow_actual_all_a_column,
     synthetic_all_a_column,
 )
 from rank7_jk.c18_basis import c18_source_rows, h62_all_a_test_columns
@@ -31,6 +35,31 @@ def test_synthetic_all_a_probe_can_stop_at_target_rank():
     assert result.selected_column_indices == tuple(range(25))
 
 
+def test_synthetic_all_a_probe_supports_row_and_column_slices():
+    columns = h62_all_a_test_columns()
+    result = run_all_a_probe(
+        prime=101,
+        evaluator=synthetic_all_a_column,
+        row_kind="even",
+        start_row=5,
+        max_rows=20,
+        start_column=10,
+        max_columns=5,
+        store_selected_vectors=True,
+    )
+
+    assert result.row_count == 20
+    assert result.column_count == 5
+    assert result.processed_columns == 5
+    assert result.source_row_indices == tuple(range(5, 25))
+    assert result.test_column_indices == tuple(range(10, 15))
+    assert result.rank == 5
+    assert result.selected_column_indices == tuple(range(10, 15))
+    assert result.selected_column_names == tuple(column.name for column in columns[10:15])
+    assert result.selected_column_vectors is not None
+    assert set(result.selected_column_vectors) == set(range(10, 15))
+
+
 def test_synthetic_all_a_column_rejects_non_all_a_columns():
     rows = c18_source_rows()
     column = h62_all_a_test_columns()[0]
@@ -52,6 +81,35 @@ def test_actual_all_a_backend_rejects_non_all_a_columns_before_formula_work():
 def test_evaluator_name_dispatch_is_explicit():
     assert evaluator_by_name("synthetic") is synthetic_all_a_column
     assert evaluator_by_name("actual") is actual_all_a_column
+    assert evaluator_by_name("moment") is actual_all_a_column
+    assert evaluator_by_name("slow-actual") is slow_actual_all_a_column
 
     with pytest.raises(ValueError, match="unknown"):
         evaluator_by_name("pretend")
+
+
+def test_cli_writes_probe_and_timing_json(tmp_path):
+    output_path = tmp_path / "probe.json"
+    timing_path = tmp_path / "timing.json"
+
+    assert main(
+        [
+            "--prime",
+            "101",
+            "--max-columns",
+            "2",
+            "--output",
+            str(output_path),
+            "--timing-json",
+            str(timing_path),
+        ]
+    ) == 0
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    timing = json.loads(timing_path.read_text(encoding="utf-8"))
+
+    assert payload["processed_columns"] == 2
+    assert payload["rank"] == 2
+    assert payload["test_column_indices"] == [0, 1]
+    assert timing["processed_columns"] == 2
+    assert "cache_info" in timing
