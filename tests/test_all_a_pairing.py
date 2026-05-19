@@ -65,7 +65,7 @@ def test_all_a_cache_info_and_kernel_precompute_are_probe_visible():
     assert "bounded_tau_power" in info
     assert info["kernel_terms"]["misses"] >= 1
     assert info["moment"]["misses"] >= 1
-    assert info["monomial_residue"]["misses"] >= 1
+    assert info["residue_functional"]["misses"] >= 1
 
 
 def test_bounded_tau_power_matches_filtered_full_tau_power_for_small_case():

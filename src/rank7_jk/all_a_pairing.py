@@ -19,6 +19,7 @@ from .config import FormulaConfig, RANK7_G2_D1
 from .exterior import ExteriorAlgebra
 from .invariants import InvariantMonomial
 from .mod_arith import require_prime
+from .residue_functional import ResidueFunctional
 from .residue_transition import residue_monomial_mod, residue_poly_mod
 from .root_system import type_a_roots
 from .sparse_poly import SparsePoly, add, clean, constant, mul, pow_poly
@@ -252,6 +253,7 @@ def all_a_cache_info() -> dict[str, dict[str, int]]:
         "kernel_terms": _cache_info_dict(_shared_kernel_terms.cache_info()),
         "moment": _cache_info_dict(_moment_mod.cache_info()),
         "monomial_residue": _cache_info_dict(_residue_monomial_cached.cache_info()),
+        "residue_functional": _cache_info_dict(_residue_functional_cached.cache_info()),
         "tau_power": _cache_info_dict(_tau_power_mod.cache_info()),
     }
 
@@ -263,6 +265,7 @@ def clear_all_a_caches() -> None:
     _shared_kernel_terms.cache_clear()
     _moment_mod.cache_clear()
     _residue_monomial_cached.cache_clear()
+    _residue_functional_cached.cache_clear()
     _tau_power_bounded_mod.cache_clear()
     _tau_power_mod.cache_clear()
 
@@ -318,21 +321,16 @@ def _moment_mod(
     caps = _moment_tau_caps(config, beta, deriv_orders)
     if caps is None:
         return 0
-    value = 0
-    for alpha, coeff in _tau_power_bounded_mod(config, tuple(a_exp), caps, p):
-        shifted = tuple(alpha[idx] + beta[idx] for idx in range(config.y_count))
-        value = (
-            value
-            + coeff
-            * _residue_monomial_cached(
-                config.rank,
-                shifted,
-                tuple(deriv_orders),
-                config.root_denominator_power,
-                p,
-            )
-        ) % p
-    return value
+    tau_poly = dict(_tau_power_bounded_mod(config, tuple(a_exp), caps, p))
+    if not tau_poly:
+        return 0
+    functional = _residue_functional_cached(
+        config.rank,
+        tuple(deriv_orders),
+        config.root_denominator_power,
+        p,
+    )
+    return functional.evaluate_poly_terms(_shift_poly(tau_poly, beta, p))
 
 
 def _moment_tau_caps(
@@ -371,6 +369,21 @@ def _residue_monomial_cached(
         deriv_orders,
         prime=require_prime(prime),
         root_power=int(root_power),
+    )
+
+
+@lru_cache(maxsize=32)
+def _residue_functional_cached(
+    rank: int,
+    deriv_orders: DerivOrders,
+    root_power: int,
+    prime: int,
+) -> ResidueFunctional:
+    return ResidueFunctional(
+        rank=int(rank),
+        derivative_orders=tuple(int(item) for item in deriv_orders),
+        root_power=int(root_power),
+        prime=require_prime(prime),
     )
 
 
@@ -692,6 +705,21 @@ def _bounded_clean(
 
 def _exceeds_caps(alpha: Tuple[int, ...], caps: Tuple[int | None, ...]) -> bool:
     return any(cap is not None and alpha[idx] > cap for idx, cap in enumerate(caps))
+
+
+def _shift_poly(
+    poly: SparsePoly,
+    beta: Tuple[int, ...],
+    prime: int,
+) -> SparsePoly:
+    if not any(beta):
+        return poly
+    p = require_prime(prime)
+    out: SparsePoly = {}
+    for alpha, coeff in poly.items():
+        shifted = tuple(alpha[idx] + beta[idx] for idx in range(len(beta)))
+        out[shifted] = (out.get(shifted, 0) + coeff) % p
+    return clean(out, p)
 
 
 def _zero_deriv(config: FormulaConfig) -> DerivOrders:
