@@ -44,6 +44,10 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python -m rank7_jk.repro gate-b \
   --output artifacts/math_gates/gate_B_rank5_regression.json
 ```
 
+Gate artifacts are generated outputs and are ignored by git. Gate B can use a
+local read-only copy of the old rank-5 study repo through `RANK5_STUDY_REPO`;
+when that repo is absent, committed provenance hashes are used.
+
 Gate C rank-7 residue-transition smoke is now implemented:
 
 - `rank7_jk.root_system` fixes the Type-A positive-root interval conventions

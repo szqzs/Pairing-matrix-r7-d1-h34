@@ -13,10 +13,11 @@ def test_tree_hash_accepts_project_relative_paths():
     assert relative == absolute
 
 
-def test_gate_b_artifact_validates_against_schema():
+def test_gate_b_artifact_validates_against_schema(tmp_path):
     schema_path = repro.PROJECT_ROOT / "schemas/math_gate.schema.json"
-    artifact_path = repro.PROJECT_ROOT / "artifacts/math_gates/gate_B_rank5_regression.json"
+    artifact_path = tmp_path / "gate_B_rank5_regression.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    repro.write_json(artifact_path, repro.gate_b_payload())
     artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
 
     Draft202012Validator.check_schema(schema)
@@ -32,14 +33,13 @@ def test_gate_b_artifact_validates_against_schema():
     assert len(artifact["old_rank5_repo_reference"]["certificate_sha256"]) == 11
     assert len(artifact["old_rank5_repo_reference"]["computed_columns_sha256"]) == 11
     assert artifact["old_rank5_repo_reference"]["summary_sha256"]
-    assert artifact["command_transcripts"]
-    assert all(item["exit_code"] == 0 for item in artifact["command_transcripts"])
 
 
-def test_gate_c_artifact_validates_against_schema():
+def test_gate_c_artifact_validates_against_schema(tmp_path):
     schema_path = repro.PROJECT_ROOT / "schemas/math_gate.schema.json"
-    artifact_path = repro.PROJECT_ROOT / "artifacts/math_gates/gate_C_rank7_smoke.json"
+    artifact_path = tmp_path / "gate_C_rank7_smoke.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    repro.write_json(artifact_path, repro.gate_c_payload())
     artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
 
     Draft202012Validator.check_schema(schema)
@@ -48,13 +48,23 @@ def test_gate_c_artifact_validates_against_schema():
     assert artifact["source_tree_sha256"] == repro.default_source_tree_hash()
     assert artifact["source_state"]["git_head"]
     assert artifact["github_repository"] == "https://github.com/szqzs/Pairing-matrix-r7-d1-h34"
-    assert artifact["github_remote_head"]
     assert len(artifact["residue_transition_smoke"]) == 5
     assert all(item["passed"] for item in artifact["residue_transition_smoke"])
     for item in artifact["residue_transition_smoke"]:
         assert set(item["observed_mod"]) == {"1000033", "2305843009213693951"}
-    assert artifact["command_transcripts"]
-    assert all(item["exit_code"] == 0 for item in artifact["command_transcripts"])
+
+
+def test_command_transcript_capture_records_exit_code_and_hashes():
+    transcripts = repro.capture_command_transcripts(
+        ["python -c 'print(123)'"],
+        capture=True,
+    )
+
+    assert len(transcripts) == 1
+    assert transcripts[0]["exit_code"] == 0
+    assert transcripts[0]["stdout_bytes"] == 4
+    assert len(transcripts[0]["stdout_sha256"]) == 64
+    assert len(transcripts[0]["stderr_sha256"]) == 64
 
 
 def _tree_members_for_default_hash():

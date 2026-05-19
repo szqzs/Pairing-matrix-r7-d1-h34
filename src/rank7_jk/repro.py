@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -25,13 +26,20 @@ from .rank5_regression import (
     RANK5_PUBLIC_SCALAR_FIXTURES,
     RANK5_SMALL_PUBLIC_MINOR_FIXTURES,
 )
+from .rank5_provenance import (
+    RANK5_CERTIFICATE_SHA256,
+    RANK5_COMPUTED_COLUMNS_SHA256,
+    RANK5_SUMMARY_SHA256,
+)
 from .rank7_smoke import run_residue_smoke_cases
 from . import slow_evaluator
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = PROJECT_ROOT / "schemas/math_gate.schema.json"
-OLD_RANK5_REPO = Path("/tmp/codex-repo-study-pairing-matrix")
+OLD_RANK5_REPO = Path(
+    os.environ.get("RANK5_STUDY_REPO", "/tmp/codex-repo-study-pairing-matrix")
+)
 RANK7_GITHUB_URL = "https://github.com/szqzs/Pairing-matrix-r7-d1-h34"
 
 
@@ -154,7 +162,7 @@ def environment_payload() -> dict[str, Any]:
 
 def old_rank5_certificate_hashes() -> dict[str, str]:
     if not OLD_RANK5_REPO.exists():
-        return {}
+        return dict(RANK5_CERTIFICATE_SHA256)
     out: dict[str, str] = {}
     for item in sorted(OLD_RANK5_REPO.glob("c*/certificate.json")):
         out[item.relative_to(OLD_RANK5_REPO).as_posix()] = file_sha256(item)
@@ -163,7 +171,7 @@ def old_rank5_certificate_hashes() -> dict[str, str]:
 
 def old_rank5_computed_column_hashes() -> dict[str, str]:
     if not OLD_RANK5_REPO.exists():
-        return {}
+        return dict(RANK5_COMPUTED_COLUMNS_SHA256)
     out: dict[str, str] = {}
     for item in sorted(OLD_RANK5_REPO.glob("c*/computed_columns_mod_p.json.gz")):
         out[item.relative_to(OLD_RANK5_REPO).as_posix()] = file_sha256(item)
@@ -172,7 +180,7 @@ def old_rank5_computed_column_hashes() -> dict[str, str]:
 
 def old_rank5_summary_hash() -> str | None:
     summary = OLD_RANK5_REPO / "summary.json"
-    return file_sha256(summary) if summary.exists() else None
+    return file_sha256(summary) if summary.exists() else RANK5_SUMMARY_SHA256
 
 
 def default_source_tree_hash() -> str:
