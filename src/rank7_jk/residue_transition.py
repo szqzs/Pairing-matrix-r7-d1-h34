@@ -97,38 +97,62 @@ def _eliminate_variable_mod(
 ) -> Dict[ResidueStateKey, int]:
     next_terms: Dict[ResidueStateKey, int] = {}
     for (cur_alpha, denom_powers), coeff in states.items():
-        local: Dict[Tuple[int, DenominatorPowers], int] = {
-            (cur_alpha[var_idx], denom_powers): coeff
-        }
-        for pos, lower_pos in roots.transition_schedule[var_idx]:
-            local = _expand_root_denominator_mod(
-                local,
-                roots,
-                var_idx,
-                derivative_orders,
-                pos,
-                lower_pos,
-                prime,
-            )
-            if not local:
-                break
-
-        for (cur_y_exp, dtuple), state_coeff in local.items():
-            special_exponent = -1 - cur_y_exp
-            special = _special_coeff_mod(
-                roots.rank,
-                var_idx,
-                derivative_orders[var_idx],
-                special_exponent,
-                prime,
-            )
-            if not special:
-                continue
+        local = _local_variable_transition_mod(
+            roots.rank,
+            var_idx,
+            cur_alpha[var_idx],
+            denom_powers,
+            derivative_orders,
+            prime,
+        )
+        for dtuple, state_coeff in local:
             next_alpha = list(cur_alpha)
             next_alpha[var_idx] = 0
             key = (tuple(next_alpha), dtuple)
-            next_terms[key] = (next_terms.get(key, 0) + state_coeff * special) % prime
+            next_terms[key] = (next_terms.get(key, 0) + coeff * state_coeff) % prime
     return {key: value for key, value in next_terms.items() if value}
+
+
+@lru_cache(maxsize=None)
+def _local_variable_transition_mod(
+    rank: int,
+    var_idx: int,
+    cur_y_exp: int,
+    denom_powers: DenominatorPowers,
+    derivative_orders: Alpha,
+    prime: int,
+) -> Tuple[Tuple[DenominatorPowers, int], ...]:
+    p = require_prime(prime)
+    roots = type_a_roots(rank)
+    local: Dict[Tuple[int, DenominatorPowers], int] = {
+        (int(cur_y_exp), denom_powers): 1
+    }
+    for pos, lower_pos in roots.transition_schedule[var_idx]:
+        local = _expand_root_denominator_mod(
+            local,
+            roots,
+            var_idx,
+            derivative_orders,
+            pos,
+            lower_pos,
+            p,
+        )
+        if not local:
+            return ()
+
+    out: Dict[DenominatorPowers, int] = {}
+    for (next_y_exp, dtuple), coeff in local.items():
+        special_exponent = -1 - next_y_exp
+        special = _special_coeff_mod(
+            roots.rank,
+            var_idx,
+            derivative_orders[var_idx],
+            special_exponent,
+            p,
+        )
+        if special:
+            out[dtuple] = (out.get(dtuple, 0) + coeff * special) % p
+    return tuple(sorted((dtuple, coeff) for dtuple, coeff in out.items() if coeff))
 
 
 def _expand_root_denominator_mod(

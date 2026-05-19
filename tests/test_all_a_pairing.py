@@ -5,6 +5,7 @@ from rank7_jk.all_a_pairing import (
     clear_all_a_caches,
     precompute_all_a_defect_kernels,
 )
+from rank7_jk import all_a_pairing
 from rank7_jk.c18_basis import a_exp_from_parts, c18_source_rows, restricted_partitions
 from rank7_jk.config import FormulaConfig
 from rank7_jk.invariants import InvariantMonomial
@@ -61,9 +62,34 @@ def test_all_a_cache_info_and_kernel_precompute_are_probe_visible():
 
     assert defects == ("f2",)
     assert {"batch_evaluator", "kernel_terms", "moment", "monomial_residue", "tau_power"} <= set(info)
+    assert "bounded_tau_power" in info
     assert info["kernel_terms"]["misses"] >= 1
     assert info["moment"]["misses"] >= 1
     assert info["monomial_residue"]["misses"] >= 1
+
+
+def test_bounded_tau_power_matches_filtered_full_tau_power_for_small_case():
+    config = FormulaConfig(rank=7, genus=2)
+    prime = 101
+    a_exp = (2, 1, 0, 0, 0, 0)
+    caps = (None, None, None, None, None, 2)
+
+    full = dict(all_a_pairing._tau_power_mod(config, a_exp, prime))  # noqa: SLF001
+    bounded = dict(
+        all_a_pairing._tau_power_bounded_mod(config, a_exp, caps, prime)  # noqa: SLF001
+    )
+    expected = {
+        alpha: coeff
+        for alpha, coeff in full.items()
+        if alpha[-1] <= 2
+    }
+
+    assert bounded == expected
+
+
+def test_residue_exponent_caps_capture_backward_transition_bounds():
+    assert all_a_pairing._residue_exponent_caps(5, (0, 0, 0, 0), 2) == (30, 14, 6, 2)  # noqa: SLF001
+    assert all_a_pairing._residue_exponent_caps(7, (0, 0, 0, 0, 0, 0), 2) == (126, 62, 30, 14, 6, 2)  # noqa: SLF001
 
 
 def _assert_generic_and_moment_match_rank5_reference(total):

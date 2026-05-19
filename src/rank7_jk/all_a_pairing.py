@@ -20,6 +20,7 @@ from .exterior import ExteriorAlgebra
 from .invariants import InvariantMonomial
 from .mod_arith import require_prime
 from .residue_transition import residue_monomial_mod, residue_poly_mod
+from .root_system import type_a_roots
 from .sparse_poly import SparsePoly, add, clean, constant, mul, pow_poly
 
 DerivOrders = Tuple[int, ...]
@@ -247,6 +248,7 @@ def all_a_cache_info() -> dict[str, dict[str, int]]:
 
     return {
         "batch_evaluator": _cache_info_dict(_cached_moment_batch_evaluator.cache_info()),
+        "bounded_tau_power": _cache_info_dict(_tau_power_bounded_mod.cache_info()),
         "kernel_terms": _cache_info_dict(_shared_kernel_terms.cache_info()),
         "moment": _cache_info_dict(_moment_mod.cache_info()),
         "monomial_residue": _cache_info_dict(_residue_monomial_cached.cache_info()),
@@ -261,6 +263,7 @@ def clear_all_a_caches() -> None:
     _shared_kernel_terms.cache_clear()
     _moment_mod.cache_clear()
     _residue_monomial_cached.cache_clear()
+    _tau_power_bounded_mod.cache_clear()
     _tau_power_mod.cache_clear()
 
 
@@ -312,8 +315,11 @@ def _moment_mod(
     p = require_prime(prime)
     if len(beta) != config.y_count:
         raise ValueError("kernel monomial dimension does not match the formula config")
+    caps = _moment_tau_caps(config, beta, deriv_orders)
+    if caps is None:
+        return 0
     value = 0
-    for alpha, coeff in _tau_power_mod(config, tuple(a_exp), p):
+    for alpha, coeff in _tau_power_bounded_mod(config, tuple(a_exp), caps, p):
         shifted = tuple(alpha[idx] + beta[idx] for idx in range(config.y_count))
         value = (
             value
@@ -327,6 +333,28 @@ def _moment_mod(
             )
         ) % p
     return value
+
+
+def _moment_tau_caps(
+    config: FormulaConfig,
+    beta: Tuple[int, ...],
+    deriv_orders: DerivOrders,
+) -> Tuple[int | None, ...] | None:
+    if len(deriv_orders) != config.y_count:
+        raise ValueError("derivative order length does not match the formula config")
+
+    residue_caps = _residue_exponent_caps(
+        config.rank,
+        tuple(int(item) for item in deriv_orders),
+        config.root_denominator_power,
+    )
+    caps: list[int | None] = []
+    for idx, cap in enumerate(residue_caps):
+        tau_cap = cap - int(beta[idx])
+        if tau_cap < 0:
+            return None
+        caps.append(tau_cap)
+    return tuple(caps)
 
 
 @lru_cache(maxsize=None)
@@ -344,6 +372,31 @@ def _residue_monomial_cached(
         prime=require_prime(prime),
         root_power=int(root_power),
     )
+
+
+@lru_cache(maxsize=None)
+def _residue_exponent_caps(
+    rank: int,
+    deriv_orders: DerivOrders,
+    root_power: int,
+) -> Tuple[int, ...]:
+    """Conservative monomial exponent caps for nonzero residue contributions."""
+
+    roots = type_a_roots(rank)
+    if len(deriv_orders) != roots.y_count:
+        raise ValueError("derivative order length does not match rank")
+    max_den = [int(root_power) for _ in range(roots.positive_root_count)]
+    caps = [0 for _ in range(roots.y_count)]
+    for var_idx in reversed(range(roots.y_count)):
+        simple_pos = roots.interval_index[(var_idx, var_idx + 1)]
+        cap = int(deriv_orders[var_idx]) + max_den[simple_pos]
+        caps[var_idx] = cap
+        for pos, lower_pos in roots.transition_schedule[var_idx]:
+            current_power = max_den[pos]
+            max_den[pos] = 0
+            if lower_pos >= 0:
+                max_den[lower_pos] += current_power + cap
+    return tuple(caps)
 
 
 def _validate_total(config: FormulaConfig, total: InvariantMonomial) -> None:
@@ -512,6 +565,133 @@ def _tau_power_mod(
             factor = dict(modular_formula.tau_mod(config, r, p))
             out = mul(out, pow_poly(factor, int(exp), prime=p), prime=p)
     return tuple(sorted(out.items()))
+
+
+@lru_cache(maxsize=None)
+def _tau_power_bounded_mod(
+    config: FormulaConfig,
+    a_exp: Tuple[int, ...],
+    caps: Tuple[int | None, ...],
+    prime: int,
+) -> Tuple[Tuple[Tuple[int, ...], int], ...]:
+    p = require_prime(prime)
+    if len(a_exp) != len(config.class_ranks):
+        raise ValueError("a exponent length does not match the formula config")
+    if len(caps) != config.y_count:
+        raise ValueError("cap length does not match the formula config")
+    if all(cap is None for cap in caps):
+        return _tau_power_mod(config, a_exp, p)
+
+    out = constant(config.y_count, 1, prime=p)
+    for exp, r in zip(a_exp, config.class_ranks):
+        if exp:
+            factor = dict(modular_formula.tau_mod(config, r, p))
+            out = _bounded_mul(
+                out,
+                _bounded_pow(factor, int(exp), caps, p),
+                caps,
+                p,
+            )
+    return tuple(sorted(out.items()))
+
+
+def _bounded_pow(
+    base: SparsePoly,
+    exponent: int,
+    caps: Tuple[int | None, ...],
+    prime: int,
+) -> SparsePoly:
+    p = require_prime(prime)
+    exp = int(exponent)
+    if exp < 0:
+        raise ValueError("polynomial exponent must be nonnegative")
+    out = constant(len(caps), 1, prime=p)
+    factor = _bounded_clean(base, caps, p)
+    for _ in range(exp):
+        out = _bounded_mul(out, factor, caps, p)
+    return out
+
+
+def _bounded_mul(
+    left: SparsePoly,
+    right: SparsePoly,
+    caps: Tuple[int | None, ...],
+    prime: int,
+) -> SparsePoly:
+    p = require_prime(prime)
+    if not left or not right:
+        return {}
+    if len(caps) == 6:
+        return _bounded_mul_6(left, right, caps, p)
+    out: SparsePoly = {}
+    for a1, c1 in left.items():
+        for a2, c2 in right.items():
+            alpha = tuple(a1[idx] + a2[idx] for idx in range(len(caps)))
+            if _exceeds_caps(alpha, caps):
+                continue
+            out[alpha] = (out.get(alpha, 0) + c1 * c2) % p
+    return clean(out, p)
+
+
+def _bounded_mul_6(
+    left: SparsePoly,
+    right: SparsePoly,
+    caps: Tuple[int | None, ...],
+    prime: int,
+) -> SparsePoly:
+    cap0 = 10**9 if caps[0] is None else int(caps[0])
+    cap1 = 10**9 if caps[1] is None else int(caps[1])
+    cap2 = 10**9 if caps[2] is None else int(caps[2])
+    cap3 = 10**9 if caps[3] is None else int(caps[3])
+    cap4 = 10**9 if caps[4] is None else int(caps[4])
+    cap5 = 10**9 if caps[5] is None else int(caps[5])
+    right_items = tuple(right.items())
+    out: SparsePoly = {}
+    p = prime
+    for a1, c1 in left.items():
+        a10, a11, a12, a13, a14, a15 = a1
+        for a2, c2 in right_items:
+            s0 = a10 + a2[0]
+            if s0 > cap0:
+                continue
+            s1 = a11 + a2[1]
+            if s1 > cap1:
+                continue
+            s2 = a12 + a2[2]
+            if s2 > cap2:
+                continue
+            s3 = a13 + a2[3]
+            if s3 > cap3:
+                continue
+            s4 = a14 + a2[4]
+            if s4 > cap4:
+                continue
+            s5 = a15 + a2[5]
+            if s5 > cap5:
+                continue
+            alpha = (s0, s1, s2, s3, s4, s5)
+            value = (out.get(alpha, 0) + c1 * c2) % p
+            if value:
+                out[alpha] = value
+            else:
+                out.pop(alpha, None)
+    return out
+
+
+def _bounded_clean(
+    poly: SparsePoly,
+    caps: Tuple[int | None, ...],
+    prime: int,
+) -> SparsePoly:
+    return {
+        alpha: coeff
+        for alpha, coeff in clean(poly, prime).items()
+        if not _exceeds_caps(alpha, caps)
+    }
+
+
+def _exceeds_caps(alpha: Tuple[int, ...], caps: Tuple[int | None, ...]) -> bool:
+    return any(cap is not None and alpha[idx] > cap for idx, cap in enumerate(caps))
 
 
 def _zero_deriv(config: FormulaConfig) -> DerivOrders:
