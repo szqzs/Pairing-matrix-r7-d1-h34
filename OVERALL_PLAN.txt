@@ -1,0 +1,196 @@
+Rank 7 Genus 2 Jeffrey-Kirwan Pairing Project
+Overall Plan
+
+Project Goal
+============
+
+Build a new, auditable, cluster-ready codebase for the rank 7, genus 2,
+determinant degree 1 Jeffrey-Kirwan pairing calculation in cohomological
+degree 34.
+
+The final mathematical target is not an exact rational relation at first.
+The target is:
+
+1. For every Chern degree except c18, verify that the pairing matrix has full
+   row rank by finding a nonzero selected minor.
+2. For c18, find rank 308 inside the 309-dimensional source slice, producing a
+   unique one-dimensional selected-kernel candidate line.
+3. Check selected minors at a second prime for arithmetic consistency.
+
+Mathematical Setup
+==================
+
+Rank: 7
+Genus: 2
+Determinant degree: 1
+Top cohomological degree: 96
+Source degree: 34
+Test degree: 62
+Primary expected relation Chern degree: 18
+
+Source dimensions in H^34 by Chern degree:
+
+  c17: 37
+  c18: 309
+  c19: 980
+  c20: 1612
+  c21: 1641
+  c22: 1304
+  c23: 875
+  c24: 558
+  c25: 328
+  c26: 195
+  c27: 106
+  c28: 61
+  c29: 30
+  c30: 17
+  c31: 7
+  c32: 4
+  c33: 1
+  c34: 1
+
+The c18 task is to find a nonzero 308 x 308 selected minor. This identifies a
+one-dimensional candidate relation line, assuming the expected uniqueness
+input.
+
+Guiding Engineering Rules
+=========================
+
+1. Do not edit the old rank 5 repository or frozen source snapshots.
+2. Build a new codebase from scratch, using the old rank 5 implementation only
+   as a reference and regression source.
+3. Make the formula layer rank-generic enough to reproduce rank 5 genus 2
+   known values before trusting rank 7.
+4. Make the production kernel specialized and optimized enough for rank 7.
+5. Design for cluster sharding from the beginning: immutable manifests,
+   resumable workers, deterministic reducers, and independent verification.
+
+Major Phases
+============
+
+Phase 1: New Codebase Skeleton and Mathematical Reference Layer
+---------------------------------------------------------------
+
+Create a clean package for the new project. Implement the mathematical
+objects in a readable reference layer:
+
+  - simple-root coordinates Y1,...,Y6;
+  - rank 7 x_i(Y) coordinates;
+  - tau_2,...,tau_7;
+  - q = tau_2 + d3 tau_3 + ... + d7 tau_7;
+  - B_j = -(dq)(h_j);
+  - positive roots and D(X)^2;
+  - Hessian determinant ratio;
+  - odd-variable hat_tau expression;
+  - gamma_rs expansion into paper b_r^j variables;
+  - slow symbolic or semi-symbolic checks for small cases.
+
+Phase 2: Rank 5 Regression Harness
+----------------------------------
+
+Run the new formula/kernel in rank 5 genus 2 mode and reproduce known values
+from the existing public repository. This is the safety gate before trusting
+rank 7.
+
+Minimum regression target:
+
+  f2^11 paired with f2^13 equals
+  1381783072775710288 mod 2305843009213693951.
+
+Additional selected minors from the rank 5 certificates should be added after
+the first regression passes.
+
+Phase 3: Fast Modular Rank 7 Kernel
+-----------------------------------
+
+Implement the finite-field sparse-polynomial evaluator:
+
+  - sparse polynomial arithmetic in six Y variables;
+  - delta-polynomial arithmetic in d3,...,d7;
+  - exterior algebra on b_r^j for 2 <= r <= 7 and 1 <= j <= 4;
+  - cached gamma/hat_tau kernels;
+  - cached even kernels;
+  - residue transitions for six variables and twenty-one positive roots;
+  - pairing_total_mod as the main matrix-entry interface.
+
+Phase 4: Basis Generation
+-------------------------
+
+Generate and reduce the H^34 source basis by Chern degree. Build a streaming
+or reduced generator for H^62 test classes. Avoid constructing large full
+matrices.
+
+Phase 5: Local Rank Search and Certificate Format
+-------------------------------------------------
+
+Implement:
+
+  - column computation;
+  - modular row reduction;
+  - selected row and selected column tracking;
+  - selected-minor determinant;
+  - compact certificate JSON;
+  - direct selected-minor recomputation.
+
+Phase 6: Bouchet Cluster Workflow
+---------------------------------
+
+Implement cluster commands:
+
+  manifest: create immutable task list;
+  worker: compute assigned column bundle;
+  reduce: merge shards and select rank certificates;
+  verify: recompute selected minors at primary and second primes.
+
+Use Slurm job arrays on Bouchet, targeting day/day_amd partitions. Start small
+and scale only after shard validation is reliable.
+
+Phase 7: Production Computation
+-------------------------------
+
+Recommended run order:
+
+  1. Tiny slices: c34, c33, c32, c31.
+  2. Medium slices: c30 down to c24.
+  3. Heavy full-rank slices: c23, c22, c21, c20, c19, c17.
+  4. Candidate relation slice: c18, stopping at rank 308.
+
+Immediate Milestones
+====================
+
+Milestone A:
+  Create package skeleton and formula-reference tests.
+
+Milestone B:
+  Reproduce at least one rank 5 genus 2 public pairing entry.
+
+Milestone C:
+  Compute one rank 7 genus 2 single pairing entry.
+
+Milestone D:
+  Compute and verify a full-rank selected-minor certificate for c34.
+
+Milestone E:
+  Benchmark one heavy-slice column, preferably c21 or c20.
+
+Milestone F:
+  Run scaled Bouchet job arrays for remaining full-rank slices.
+
+Milestone G:
+  Identify the c18 one-dimensional candidate line by a rank-308 selected
+  minor and second-prime consistency check.
+
+Step 1 Focus
+============
+
+Step 1 should be excellent before optimization begins. It should produce:
+
+  - a clean project layout;
+  - a rank-generic configuration object;
+  - a readable reference formula module;
+  - tests for all structural identities;
+  - rank 5 compatibility hooks for regression;
+  - no dependency on old frozen code.
+
+The first version may be slow. Its job is to make the mathematics inspectable
+and hard to get wrong.

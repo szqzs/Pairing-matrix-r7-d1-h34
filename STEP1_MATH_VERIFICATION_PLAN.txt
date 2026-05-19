@@ -1,0 +1,301 @@
+Step 1 Math Verification Plan
+=============================
+
+Purpose
+=======
+
+The rank 7 computation is meaningful only if the implemented formula is the
+Jeffrey-Kirwan formula with the correct conventions. Step 1 is therefore not
+about speed. Step 1 is about making the mathematics inspectable, testable, and
+difficult to fool.
+
+No rank search, cluster run, or optimization should be trusted until this
+verification layer passes.
+
+Primary Mathematical Target
+===========================
+
+Implement and verify the Jeffrey-Kirwan residue formula for:
+
+  rank n = 7
+  genus g = 2
+  determinant degree d = 1
+  source cohomological degree = 34
+  test cohomological degree = 62
+
+The implementation should also support rank n = 5, genus g = 2 so that it can
+be regression-tested against the existing public rank 5 computation.
+
+Verification Philosophy
+=======================
+
+Use multiple independent checks:
+
+1. Direct formula transcription from the Jeffrey-Kirwan paper.
+2. Rank-generic symbolic identities.
+3. Rank 5 regression against the known public computation.
+4. Slow reference evaluator versus fast modular evaluator.
+5. Independent residue-oracle checks for selected monomials.
+6. Second-prime arithmetic checks once certificates exist.
+
+Any disagreement stops the project until explained.
+
+Formula Components To Verify
+============================
+
+1. Simple-root coordinates
+--------------------------
+
+For rank n, introduce Y_1,...,Y_{n-1} with:
+
+  Y_i = x_i - x_{i+1}
+  x_1 + ... + x_n = 0
+
+The code must verify:
+
+  sum_i x_i = 0
+  x_i - x_{i+1} = Y_i
+
+For rank 7, the code should print or record the explicit x_i(Y) formulas so
+they can be inspected by hand.
+
+2. Invariant polynomials tau_r
+------------------------------
+
+Define:
+
+  tau_r = e_r(x_1,...,x_n),  2 <= r <= n
+
+Verify:
+
+  tau_1 = 0
+  tau_r is symmetric in the x_i
+  tau_r has the expected total degree r in the Y variables
+
+3. Generating polynomial q
+--------------------------
+
+Define:
+
+  q = tau_2 + d3 tau_3 + ... + dn tau_n
+
+For rank 7:
+
+  q = tau_2 + d3 tau_3 + d4 tau_4 + d5 tau_5
+      + d6 tau_6 + d7 tau_7
+
+4. Simple-root denominator terms B_j
+------------------------------------
+
+Define:
+
+  B_j = -(dq)(h_j)
+
+where h_j is the j-th simple coroot direction.
+
+Verify:
+
+  B_j |_{d3=...=dn=0} = Y_j
+
+This is one of the most important convention checks. A sign error here would
+poison the entire residue calculation.
+
+5. Positive-root denominator
+----------------------------
+
+The positive roots are:
+
+  x_i - x_j = Y_i + ... + Y_{j-1},  1 <= i < j <= n
+
+For genus 2, the root denominator is:
+
+  D(X)^2 = product_{i<j} (x_i - x_j)^2
+
+For rank 7, there must be exactly:
+
+  7 * 6 / 2 = 21
+
+positive roots.
+
+6. Determinant-degree exponential
+---------------------------------
+
+For determinant degree 1, use:
+
+  c_tilde = (1/n,...,1/n,-(n-1)/n)
+
+For rank 7:
+
+  c_tilde = (1/7,1/7,1/7,1/7,1/7,1/7,-6/7)
+
+Verify at delta zero:
+
+  (dq)(c_tilde) = -(Y1 + 2Y2 + 3Y3 + 4Y4 + 5Y5 + 6Y6)/7
+
+7. Weyl/prefactor normalization
+-------------------------------
+
+The collapsed prefactor for determinant degree 1 is:
+
+  (-1)^{n_+(g-1)} * n^g / n! * |S_{n-1}|
+
+where:
+
+  n_+ = n(n-1)/2
+
+For rank 7, genus 2:
+
+  n_+ = 21
+  sign = -1
+  n^g / n! * |S_6| = 7^2 / 7! * 6! = 7
+  collapsed prefactor = -7
+
+Verify this symbolically and record it in tests.
+
+8. Hessian determinant ratio
+----------------------------
+
+The formula uses:
+
+  (det H_q / det H_tau2)^g
+
+For genus 2, this is the square.
+
+Verify:
+
+  det(H_q) / det(H_tau2) = 1 at delta zero
+
+9. Odd variables and hat_tau
+----------------------------
+
+Use the paper odd variables:
+
+  b_r^j,  2 <= r <= n,  1 <= j <= 2g
+
+For rank 7, genus 2:
+
+  2 <= r <= 7
+  1 <= j <= 4
+  total odd variables = 24
+
+The hat_tau coefficient is:
+
+  - grad(tau_r)^T H_q^{-1} grad(tau_s)
+
+paired across symplectic indices j and j+g.
+
+Verify:
+
+  odd monomials of odd exterior degree contribute zero
+  repeated b variables wedge to zero
+  signs agree with Koszul ordering
+
+10. Gamma convention
+--------------------
+
+Gamma variables are not new JK generators. They are Sp-invariant abbreviations
+in the exterior algebra:
+
+  gamma_rs =
+      b_r^1 b_s^3 - b_r^3 b_s^1
+    + b_r^2 b_s^4 - b_r^4 b_s^2
+
+For rank 7, use 2 <= r <= s <= 7.
+
+Verify:
+
+  gamma_rs = gamma_sr
+  gamma_rr has doubled terms
+  products are canonicalized with the correct exterior signs
+  nilpotence removes impossible products
+
+11. f-class coefficient extraction
+----------------------------------
+
+The classes f_3,...,f_n are extracted by delta coefficients. The final
+monomial value includes:
+
+  product_r nu_r!
+
+Verify:
+
+  coefficient extraction divides by the derivative factorials correctly
+  final scaling multiplies by all f_r factorials exactly once
+
+12. Residue order
+-----------------
+
+The paper writes the iterated residue in Y_1,...,Y_{n-1} order. The code
+applies the nested operation inside-out.
+
+For rank 7, the implementation should eliminate:
+
+  Y6, then Y5, then Y4, then Y3, then Y2, then Y1
+
+Verify this convention explicitly.
+
+Reference Implementation Requirements
+=====================================
+
+The first reference implementation should be slow but transparent.
+
+It should include:
+
+  config.py:
+    rank, genus, determinant degree, source degree, test degree, primes
+
+  formula_ref.py:
+    symbolic construction of x_i, tau_r, q, B_j, roots, Hessian ratio,
+    c_tilde exponent, hat_tau pieces
+
+  exterior.py:
+    b-label ordering, wedge product, gamma expansion
+
+  checks.py:
+    command-line runner for all structural formula checks
+
+  tests/:
+    pytest tests for identities and gamma signs
+
+Rank 5 Regression Gate
+======================
+
+The new implementation must reproduce known rank 5, genus 2 values from the
+public repository before rank 7 is trusted.
+
+Minimum first regression:
+
+  source row: f2^11
+  test row:   f2^13
+  prime:      2305843009213693951
+  value:      1381783072775710288
+
+After that passes, add selected-minor regression checks from the public rank 5
+certificates.
+
+Rank 7 Initial Gate
+===================
+
+Before optimization, rank 7 must pass:
+
+  - all structural identities;
+  - gamma convention tests;
+  - at least one slow symbolic or semi-symbolic sample where feasible;
+  - agreement between slow and modular implementations on small examples;
+  - deterministic output hashes for basis generation.
+
+Stop Conditions
+===============
+
+Stop immediately if any of the following occur:
+
+  - B_j is not Y_j at delta zero;
+  - c_tilde exponent has the wrong sign or coefficients;
+  - collapsed prefactor is not -7;
+  - gamma_rr does not produce doubled terms;
+  - rank 5 regression fails;
+  - slow and modular kernels disagree on a sample;
+  - changing primes changes a structural result that should be prime
+    independent.
+
+Only after these gates pass should we start performance work.

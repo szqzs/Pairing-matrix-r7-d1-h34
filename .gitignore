@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+*.py[cod]
+*.egg-info/
+dist/
+build/
+artifacts/math_gates/*.json
