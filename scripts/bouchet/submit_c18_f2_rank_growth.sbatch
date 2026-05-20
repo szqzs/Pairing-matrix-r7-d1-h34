@@ -13,7 +13,8 @@ set -euo pipefail
 #     --export=ALL,REPO_ROOT=$PWD,PRIME=1009,STOP_RANK=8,OUTPUT=$PWD/results/c18_f2_rank_growth/bouchet_p1009_rank8.json \
 #     scripts/bouchet/submit_c18_f2_rank_growth.sbatch
 #
-# For the full p=101 run, use --time=1-00:00:00 and STOP_RANK=308.
+# For gamma/even scouting after a plateau, use a fresh output path with
+# COLUMN_ORDER=f2-power-balanced, MAX_COLUMNS, and MAX_DEPENDENT_COLUMNS.
 
 REPO_ROOT="${REPO_ROOT:-$(pwd)}"
 DERIVATIVE_THREADS="${DERIVATIVE_THREADS:-${SLURM_CPUS_PER_TASK:-8}}"

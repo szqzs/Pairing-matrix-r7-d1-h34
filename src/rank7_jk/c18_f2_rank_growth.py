@@ -49,6 +49,7 @@ def run_c18_f2_rank_growth(
     stop_rank: int | None = None,
     target_left_nullity: int | None = 1,
     max_semantic_keys: int | None = None,
+    max_dependent_columns: int | None = None,
     beta_chunk_size: int = 2,
     max_chunk_terms: int = 200_000,
     store_selected_vectors: bool = True,
@@ -71,6 +72,8 @@ def run_c18_f2_rank_growth(
     normalized_method = _normalize_method(method)
     if checkpoint_interval < 0:
         raise ValueError("checkpoint_interval must be nonnegative")
+    if max_dependent_columns is not None and max_dependent_columns < 0:
+        raise ValueError("max_dependent_columns must be nonnegative")
 
     rows, source_indices = _select_rank_growth_rows(
         config,
@@ -136,6 +139,16 @@ def run_c18_f2_rank_growth(
     )
     column_records: list[dict[str, object]] = (
         [] if resume_state is None else list(resume_state.get("columns", []))
+    )
+    dependent_columns_since_rank_gain = (
+        0
+        if resume_state is None
+        else int(
+            resume_state.get(
+                "dependent_columns_since_rank_gain",
+                _trailing_dependent_columns(column_records),
+            )
+        )
     )
     nonzero_records: list[dict[str, object]] = (
         []
@@ -224,6 +237,10 @@ def run_c18_f2_rank_growth(
         independent = tracker.add_column(vector_tuple, index=column_index)
         if independent and selected_vectors is not None:
             selected_vectors[int(column_index)] = vector_tuple
+        if independent:
+            dependent_columns_since_rank_gain = 0
+        else:
+            dependent_columns_since_rank_gain += 1
         if column_nonzero:
             nonzero_columns += 1
         column_records.append(
@@ -232,13 +249,24 @@ def run_c18_f2_rank_growth(
                 "index": int(column_index),
                 "name": column.name,
                 "defect": column.defect,
+                "f2_power": _f2_power(column),
                 "nonzero_count": int(column_nonzero),
                 "independent": bool(independent),
                 "rank_after": int(tracker.rank),
                 "left_nullity_after": int(tracker.nullity_left),
+                "dependent_columns_since_rank_gain": int(
+                    dependent_columns_since_rank_gain
+                ),
                 "elapsed_seconds": time.perf_counter() - column_start,
             }
         )
+
+        if (
+            max_dependent_columns is not None
+            and dependent_columns_since_rank_gain >= max_dependent_columns
+        ):
+            stop_reason = "max_dependent_columns"
+            break
 
         if (
             checkpoint_path is not None
@@ -288,6 +316,8 @@ def run_c18_f2_rank_growth(
                     stop_reason="checkpoint",
                     elapsed_seconds=time.perf_counter() - start,
                     max_semantic_keys=max_semantic_keys,
+                    max_dependent_columns=max_dependent_columns,
+                    dependent_columns_since_rank_gain=dependent_columns_since_rank_gain,
                     beta_chunk_size=beta_chunk_size,
                     max_chunk_terms=max_chunk_terms,
                     store_semantic_records=store_semantic_records,
@@ -342,6 +372,8 @@ def run_c18_f2_rank_growth(
         stop_reason=stop_reason,
         elapsed_seconds=elapsed,
         max_semantic_keys=max_semantic_keys,
+        max_dependent_columns=max_dependent_columns,
+        dependent_columns_since_rank_gain=dependent_columns_since_rank_gain,
         beta_chunk_size=beta_chunk_size,
         max_chunk_terms=max_chunk_terms,
         store_semantic_records=store_semantic_records,
@@ -400,20 +432,89 @@ def _select_f2_columns(
         raise ValueError("max_columns must be nonnegative")
     all_columns = h62_f2_power_test_columns(config)
     stop = len(all_columns) if end_column is None else int(end_column)
-    if max_columns is not None:
-        stop = min(stop, start_column + max_columns)
     if stop < start_column:
         raise ValueError("end_column must be greater than or equal to start_column")
     selected = all_columns[start_column:stop]
     indices = tuple(range(start_column, start_column + len(selected)))
-    pairs = _ordered_columns(
+    pairs = _ordered_f2_columns(
         config,
         selected,
         indices,
         order=order,
         random_seed=random_seed,
     )
+    if max_columns is not None:
+        pairs = pairs[:max_columns]
     return tuple(column for _idx, column in pairs), tuple(int(idx) for idx, _column in pairs)
+
+
+def _ordered_f2_columns(
+    config: FormulaConfig,
+    columns: Sequence[H62TestColumn],
+    indices: Sequence[int],
+    *,
+    order: str,
+    random_seed: int,
+) -> list[tuple[int, H62TestColumn]]:
+    if order in {"f2-power-balanced", "f2-balanced"}:
+        return _f2_power_round_robin_order(indices, columns, reverse=False)
+    if order in {"f2-power-desc-balanced", "f2-desc-balanced"}:
+        return _f2_power_round_robin_order(indices, columns, reverse=True)
+    return _ordered_columns(
+        config,
+        columns,
+        indices,
+        order=order,
+        random_seed=random_seed,
+    )
+
+
+def _f2_power_round_robin_order(
+    indices: Sequence[int],
+    columns: Sequence[H62TestColumn],
+    *,
+    reverse: bool,
+) -> list[tuple[int, H62TestColumn]]:
+    groups: dict[int, list[tuple[int, H62TestColumn]]] = {}
+    for index, column in zip(indices, columns):
+        groups.setdefault(_f2_power(column), []).append((int(index), column))
+    for power, group in list(groups.items()):
+        groups[power] = _middle_out(group)
+    ordered: list[tuple[int, H62TestColumn]] = []
+    powers = sorted(groups, reverse=reverse)
+    depth = 0
+    while True:
+        added = False
+        for power in powers:
+            group = groups[power]
+            if depth < len(group):
+                ordered.append(group[depth])
+                added = True
+        if not added:
+            break
+        depth += 1
+    return ordered
+
+
+def _middle_out(items: Sequence[tuple[int, H62TestColumn]]) -> list[tuple[int, H62TestColumn]]:
+    if not items:
+        return []
+    center = (len(items) - 1) // 2
+    out = [items[center]]
+    radius = 1
+    while len(out) < len(items):
+        right = center + radius
+        left = center - radius
+        if right < len(items):
+            out.append(items[right])
+        if left >= 0:
+            out.append(items[left])
+        radius += 1
+    return out
+
+
+def _f2_power(column: H62TestColumn) -> int:
+    return int(column.monomial.f_exp[0])
 
 
 def _validate_high_f2_prime(
@@ -492,6 +593,8 @@ def _payload(
     stop_reason: str,
     elapsed_seconds: float,
     max_semantic_keys: int | None,
+    max_dependent_columns: int | None,
+    dependent_columns_since_rank_gain: int,
     beta_chunk_size: int,
     max_chunk_terms: int,
     store_semantic_records: bool,
@@ -577,6 +680,10 @@ def _payload(
         "max_semantic_keys": (
             None if max_semantic_keys is None else int(max_semantic_keys)
         ),
+        "max_dependent_columns": (
+            None if max_dependent_columns is None else int(max_dependent_columns)
+        ),
+        "dependent_columns_since_rank_gain": int(dependent_columns_since_rank_gain),
         "beta_chunk_size": int(beta_chunk_size),
         "max_chunk_terms": int(max_chunk_terms),
         "resume_from": None if resume_from is None else str(resume_from),
@@ -602,6 +709,15 @@ def _tracker_state(tracker: ColumnRankTracker) -> dict[str, object]:
         "selected_indices": [int(item) for item in tracker.selected_indices],
         "processed_columns": int(tracker.processed_columns),
     }
+
+
+def _trailing_dependent_columns(column_records: Sequence[dict[str, object]]) -> int:
+    total = 0
+    for record in reversed(column_records):
+        if record.get("independent"):
+            break
+        total += 1
+    return total
 
 
 def _left_nullspace_payload(
@@ -869,6 +985,8 @@ def _summary(payload: dict[str, object]) -> dict[str, object]:
         "left_nullity",
         "target_left_nullity",
         "stop_rank",
+        "max_dependent_columns",
+        "dependent_columns_since_rank_gain",
         "stop_reason",
         "elapsed_seconds",
         "git_head",
@@ -900,7 +1018,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-columns", type=int, default=None)
     parser.add_argument(
         "--column-order",
-        choices=("sequential", "random", "balanced"),
+        choices=(
+            "sequential",
+            "random",
+            "balanced",
+            "f2-balanced",
+            "f2-desc-balanced",
+            "f2-power-balanced",
+            "f2-power-desc-balanced",
+        ),
         default="sequential",
     )
     parser.add_argument("--column-random-seed", type=int, default=0)
@@ -908,6 +1034,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--target-left-nullity", type=int, default=1)
     parser.add_argument("--no-target-left-nullity", action="store_true")
     parser.add_argument("--max-semantic-keys", type=int, default=None)
+    parser.add_argument("--max-dependent-columns", type=int, default=None)
     parser.add_argument("--beta-chunk-size", type=int, default=2)
     parser.add_argument("--max-chunk-terms", type=int, default=200_000)
     parser.add_argument("--no-store-selected-vectors", action="store_true")
@@ -939,6 +1066,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             None if args.no_target_left_nullity else args.target_left_nullity
         ),
         max_semantic_keys=args.max_semantic_keys,
+        max_dependent_columns=args.max_dependent_columns,
         beta_chunk_size=args.beta_chunk_size,
         max_chunk_terms=args.max_chunk_terms,
         store_selected_vectors=not args.no_store_selected_vectors,

@@ -136,24 +136,27 @@ print("nonzero", data["nonzero_entries"], "/", data["attempted_entries"])
 PY
 ```
 
-## 7. Submit The Full p=101 Rank-308 Run
+## 7. Submit Balanced/Low-Power Scouts
 
-Only do this after the `p=1009` pilot works.
+The first long sequential `p=101` run plateaued after saturating almost all
+even rows.  Do not repeat that as the default path.  Use low-power balanced
+scouts to test whether later `f2` strata hit the remaining gamma directions.
 
 ```bash
 cd ~/rank7
 module load Python/3.12.3-GCCcore-13.3.0
 source ~/venvs/rank7/bin/activate
 
-sbatch --time=1-00:00:00 \
-  --cpus-per-task=8 \
-  --mem=32G \
-  --export=ALL,REPO_ROOT=$PWD,PYTHON_BIN=$VIRTUAL_ENV/bin/python,PYTHON_MODULE=Python/3.12.3-GCCcore-13.3.0,PRIME=101,STOP_RANK=308,OUTPUT=$PWD/results/c18_f2_rank_growth/bouchet_p101_rank308.json \
+sbatch --time=04:00:00 \
+  --cpus-per-task=2 \
+  --mem=8G \
+  --export=ALL,REPO_ROOT=$PWD,PYTHON_BIN=$VIRTUAL_ENV/bin/python,PYTHON_MODULE=Python/3.12.3-GCCcore-13.3.0,PRIME=101,COLUMN_ORDER=f2-power-balanced,MAX_COLUMNS=64,MAX_DEPENDENT_COLUMNS=32,OUTPUT=$PWD/results/c18_f2_rank_growth/balanced_p101_cols64.json \
   scripts/bouchet/submit_c18_f2_rank_growth.sbatch
 ```
 
-The script automatically resumes from its checkpoint if the checkpoint exists.
-If a job times out, resubmit the same command.
+Use a fresh output path for each scout.  Do not resume a sequential checkpoint
+with a different column order; the checkpoint prefix order is part of the
+state.
 
 ## 8. Bring Results Back To The Mac
 

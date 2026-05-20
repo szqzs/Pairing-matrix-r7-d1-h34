@@ -9,6 +9,7 @@ set -euo pipefail
 # Optional:
 #   PRIME defaults to 101
 #   STOP_RANK defaults to empty; TARGET_LEFT_NULLITY defaults to empty
+#   START_COLUMN/END_COLUMN/MAX_COLUMNS select an ordered scout window
 #   CHECKPOINT defaults to OUTPUT with ".checkpoint.json"
 #   RESUME_FROM defaults to CHECKPOINT if it exists
 #   DERIVATIVE_THREADS defaults to SLURM_CPUS_PER_TASK, then 1
@@ -22,10 +23,13 @@ METHOD="${METHOD:-batched}"
 ROW_KIND="${ROW_KIND:-all}"
 ROW_ORDER="${ROW_ORDER:-defect-balanced}"
 COLUMN_ORDER="${COLUMN_ORDER:-sequential}"
+START_COLUMN="${START_COLUMN:-}"
+END_COLUMN="${END_COLUMN:-}"
 STOP_RANK="${STOP_RANK:-}"
 TARGET_LEFT_NULLITY="${TARGET_LEFT_NULLITY:-}"
 MAX_COLUMNS="${MAX_COLUMNS:-}"
 MAX_SEMANTIC_KEYS="${MAX_SEMANTIC_KEYS:-}"
+MAX_DEPENDENT_COLUMNS="${MAX_DEPENDENT_COLUMNS:-}"
 BETA_CHUNK_SIZE="${BETA_CHUNK_SIZE:-2}"
 MAX_CHUNK_TERMS="${MAX_CHUNK_TERMS:-200000}"
 CHECKPOINT_INTERVAL="${CHECKPOINT_INTERVAL:-1}"
@@ -74,8 +78,17 @@ fi
 if [[ -n "${MAX_COLUMNS}" ]]; then
   args+=(--max-columns "${MAX_COLUMNS}")
 fi
+if [[ -n "${START_COLUMN}" ]]; then
+  args+=(--start-column "${START_COLUMN}")
+fi
+if [[ -n "${END_COLUMN}" ]]; then
+  args+=(--end-column "${END_COLUMN}")
+fi
 if [[ -n "${MAX_SEMANTIC_KEYS}" ]]; then
   args+=(--max-semantic-keys "${MAX_SEMANTIC_KEYS}")
+fi
+if [[ -n "${MAX_DEPENDENT_COLUMNS}" ]]; then
+  args+=(--max-dependent-columns "${MAX_DEPENDENT_COLUMNS}")
 fi
 if [[ -n "${RESUME_FROM}" ]]; then
   args+=(--resume-from "${RESUME_FROM}")
@@ -90,5 +103,7 @@ echo "Output: ${OUTPUT}"
 echo "Checkpoint: ${CHECKPOINT}"
 echo "Prime: ${PRIME}"
 echo "Stop rank: ${STOP_RANK:-<none>}; target left nullity: ${TARGET_LEFT_NULLITY:-<none>}"
+echo "Column order: ${COLUMN_ORDER}; columns: ${START_COLUMN:-0}-${END_COLUMN:-end}; max columns: ${MAX_COLUMNS:-<none>}"
+echo "Max dependent columns: ${MAX_DEPENDENT_COLUMNS:-<none>}"
 echo "Derivative threads: ${DERIVATIVE_THREADS}"
 "${PYTHON_BIN}" "${args[@]}"

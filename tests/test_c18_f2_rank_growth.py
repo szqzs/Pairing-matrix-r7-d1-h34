@@ -34,6 +34,49 @@ def test_f2_rank_growth_synthetic_streams_high_f2_columns(tmp_path):
     assert json.loads(output_path.read_text(encoding="utf-8"))["processed_columns"] == 4
 
 
+def test_f2_rank_growth_f2_power_balanced_samples_low_powers_early():
+    payload = run_c18_f2_rank_growth(
+        prime=101,
+        method="synthetic",
+        max_rows=2,
+        max_columns=6,
+        column_order="f2-power-balanced",
+        target_left_nullity=None,
+    )
+
+    assert payload["column_order"] == "f2-power-balanced"
+    assert [column["f2_power"] for column in payload["columns"]] == [1, 2, 3, 4, 5, 6]
+    assert payload["test_column_indices"][0] > payload["test_column_indices"][-1]
+
+
+def test_f2_rank_growth_max_columns_caps_after_ordering():
+    payload = run_c18_f2_rank_growth(
+        prime=101,
+        method="synthetic",
+        max_rows=1,
+        max_columns=3,
+        column_order="f2-power-desc-balanced",
+        target_left_nullity=None,
+    )
+
+    assert [column["f2_power"] for column in payload["columns"]] == [31, 29, 28]
+
+
+def test_f2_rank_growth_can_stop_on_dependent_plateau():
+    payload = run_c18_f2_rank_growth(
+        prime=101,
+        method="synthetic",
+        max_rows=2,
+        max_columns=10,
+        max_dependent_columns=1,
+        target_left_nullity=None,
+    )
+
+    assert payload["stop_reason"] == "max_dependent_columns"
+    assert payload["dependent_columns_since_rank_gain"] == 1
+    assert payload["processed_columns"] < 10
+
+
 def test_f2_rank_growth_emits_normalized_left_null_vector():
     payload = run_c18_f2_rank_growth(
         prime=101,
