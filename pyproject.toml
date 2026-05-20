@@ -28,6 +28,7 @@ rank7-c18-block-semantic-table = "rank7_jk.c18_block_semantic_table:main"
 rank7-c18-b-mask-probe = "rank7_jk.c18_b_mask_probe:main"
 rank7-c18-block-probe = "rank7_jk.c18_block_probe:main"
 rank7-c18-f2-rank-growth = "rank7_jk.c18_f2_rank_growth:main"
+rank7-c18-fast-semantic = "rank7_jk_fast.semantic_pipeline:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
