@@ -5,6 +5,7 @@ import pytest
 
 from rank7_jk.c18_block_probe import UnsupportedBlockEntry
 from rank7_jk.c18_block_semantic_table import (
+    assemble_combined_block_rank_from_value_tables,
     assemble_block_rank_from_value_table,
     enumerate_c18_block_semantic_keys,
     main,
@@ -80,6 +81,45 @@ def test_block_semantic_manifest_run_merge_and_assemble_synthetic(tmp_path):
     assert rank["left_nullity"] == 1
     assert len(rank["left_nullspace"]) == 1
     assert json.loads(rank_path.read_text(encoding="utf-8"))["rank"] == 3
+
+
+def test_block_semantic_combined_rank_merges_tables_with_same_rows(tmp_path):
+    table_paths = []
+    for column_kind in ("f2-power", "one-f"):
+        manifest_path = tmp_path / f"{column_kind}_manifest.json"
+        table_path = tmp_path / f"{column_kind}_table.json.gz"
+        manifest = plan_c18_block_semantic_keys(
+            prime=101,
+            method="synthetic",
+            row_kind="gamma",
+            column_kind=column_kind,
+            max_rows=4,
+            max_columns=3,
+            chunk_size=20,
+            output_dir=tmp_path / f"{column_kind}_chunks",
+            output_path=manifest_path,
+        )
+        run_block_key_manifest_chunk(manifest_path, 0)
+        merge_block_key_manifest_outputs(manifest_path, output_path=table_path)
+        assert manifest["row_count"] == 4
+        table_paths.append(table_path)
+
+    combined_path = tmp_path / "combined_rank.json"
+    combined = assemble_combined_block_rank_from_value_tables(
+        table_paths,
+        output_path=combined_path,
+        compute_left_nullspace=True,
+    )
+    first = assemble_block_rank_from_value_table(table_paths[0])
+    second = assemble_block_rank_from_value_table(table_paths[1])
+
+    assert combined["kind"] == "c18_combined_block_semantic_table_rank"
+    assert combined["table_count"] == 2
+    assert combined["processed_columns"] == 6
+    assert combined["rank"] >= max(first["rank"], second["rank"])
+    assert combined["left_nullity"] == 4 - combined["rank"]
+    assert len(combined["blocks"]) == 2
+    assert json.loads(combined_path.read_text(encoding="utf-8"))["table_count"] == 2
 
 
 def test_block_semantic_rejects_unsupported_gamma_gamma_by_default():

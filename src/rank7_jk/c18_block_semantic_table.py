@@ -633,6 +633,178 @@ def assemble_block_rank_from_value_table(
     return payload
 
 
+def assemble_combined_block_rank_from_value_tables(
+    table_paths: Sequence[Path | str],
+    *,
+    config: FormulaConfig = RANK7_G2_D1,
+    output_path: Path | None = None,
+    stop_rank: int | None = None,
+    compute_left_nullspace: bool = False,
+    store_matrix: bool = False,
+) -> dict[str, object]:
+    """Assemble several c18 block value tables against the same source rows."""
+
+    if not table_paths:
+        raise ValueError("at least one value table is required")
+    tables = [read_json_maybe_gzip(Path(path)) for path in table_paths]
+    _validate_combined_value_tables(tables)
+
+    first = tables[0]
+    p = require_prime(int(first["prime"]))
+    row_kind = str(first["row_kind"])
+    rows, source_row_indices = _rows_by_stored_indices(
+        config,
+        row_kind,
+        tuple(int(item) for item in first["source_row_indices"]),
+    )
+    tracker = ColumnRankTracker(row_count=len(rows), prime=p)
+    exterior = ExteriorAlgebra(config)
+    matrix_rows = [[] for _ in rows] if compute_left_nullspace or store_matrix else None
+    column_records = []
+    block_summaries = []
+    start = time.perf_counter()
+
+    for table_id, (table_path, table) in enumerate(zip(table_paths, tables)):
+        column_kind = str(table["column_kind"])
+        unsupported = _normalize_table_unsupported(str(table.get("unsupported", "error")))
+        columns, selected_column_indices = _columns_by_stored_indices(
+            config,
+            column_kind,
+            tuple(int(item) for item in table["test_column_indices"]),
+        )
+        values = table.get("values", {})
+        if not isinstance(values, dict):
+            raise ValueError("value table values must be a dict")
+        value_by_key = {str(key): int(value) % p for key, value in values.items()}
+        block_start_rank = tracker.rank
+        block_start_processed = tracker.processed_columns
+
+        for column_index, column in zip(selected_column_indices, columns):
+            if stop_rank is not None and tracker.rank >= stop_rank:
+                break
+            column_start = time.perf_counter()
+            vector = []
+            nonzero_count = 0
+            unsupported_count = 0
+            missing_keys = set()
+            for row_pos, row in enumerate(rows):
+                try:
+                    key, _metadata = _entry_key_and_metadata(config, exterior, row, column)
+                except UnsupportedBlockEntry:
+                    unsupported_count += 1
+                    if unsupported == "zero":
+                        value = 0
+                    else:
+                        raise
+                else:
+                    value = value_by_key.get(key)
+                    if value is None:
+                        missing_keys.add(key)
+                        value = 0
+                value %= p
+                vector.append(value)
+                if matrix_rows is not None:
+                    matrix_rows[row_pos].append(value)
+                if value:
+                    nonzero_count += 1
+            if missing_keys:
+                raise ValueError(
+                    f"value table {table_path} is missing semantic keys: "
+                    f"{sorted(missing_keys)[:5]}"
+                )
+            independent = tracker.add_column(vector, index=tracker.processed_columns)
+            column_records.append(
+                {
+                    "global_position": int(tracker.processed_columns - 1),
+                    "table_id": int(table_id),
+                    "value_table_path": str(table_path),
+                    "column_kind": column_kind,
+                    "index": int(column_index),
+                    "name": column.name,
+                    "kind": column.kind,
+                    "defect": column.defect,
+                    "nonzero_count": int(nonzero_count),
+                    "unsupported_count": int(unsupported_count),
+                    "independent": bool(independent),
+                    "rank_after": int(tracker.rank),
+                    "left_nullity_after": int(tracker.nullity_left),
+                    "elapsed_seconds": time.perf_counter() - column_start,
+                }
+            )
+
+        block_summaries.append(
+            {
+                "table_id": int(table_id),
+                "value_table_path": str(table_path),
+                "column_kind": column_kind,
+                "column_count": int(table["column_count"]),
+                "processed_columns": int(tracker.processed_columns - block_start_processed),
+                "rank_gain": int(tracker.rank - block_start_rank),
+                "rank_after": int(tracker.rank),
+            }
+        )
+        if stop_rank is not None and tracker.rank >= stop_rank:
+            break
+
+    left_nullspace = None
+    if compute_left_nullspace:
+        assert matrix_rows is not None
+        left_nullspace = [list(vector) for vector in left_nullspace_mod(matrix_rows, p)]
+
+    payload = {
+        "kind": "c18_combined_block_semantic_table_rank",
+        "schema_version": _SCHEMA_VERSION,
+        "prime": p,
+        "row_kind": row_kind,
+        "row_count": len(rows),
+        "table_count": len(tables),
+        "value_table_paths": [str(path) for path in table_paths],
+        "column_kinds": [str(table["column_kind"]) for table in tables],
+        "column_count": int(tracker.processed_columns),
+        "processed_columns": int(tracker.processed_columns),
+        "source_row_indices": list(source_row_indices),
+        "source_row_names": [row.name for row in rows],
+        "source_row_kinds": [row.kind for row in rows],
+        "rank": int(tracker.rank),
+        "left_nullity": int(tracker.nullity_left),
+        "selected_column_positions": list(tracker.selected_indices),
+        "elapsed_seconds": time.perf_counter() - start,
+        "blocks": block_summaries,
+        "columns": column_records,
+        "left_nullspace": left_nullspace,
+        "matrix": matrix_rows if store_matrix else None,
+        "git_head": _git_head(),
+        "git_dirty": _git_dirty(),
+    }
+    if output_path is not None:
+        write_json_maybe_gzip(output_path, payload)
+    return payload
+
+
+def _validate_combined_value_tables(tables: Sequence[dict[str, object]]) -> None:
+    first = tables[0]
+    if first.get("kind") != "c18_block_semantic_value_table":
+        raise ValueError("value table kind must be c18_block_semantic_value_table")
+    if not first.get("complete", False):
+        raise ValueError("value table is not complete")
+    required_equal = (
+        "prime",
+        "row_kind",
+        "row_count",
+        "source_row_indices",
+        "source_row_names",
+        "source_row_kinds",
+    )
+    for table in tables[1:]:
+        if table.get("kind") != "c18_block_semantic_value_table":
+            raise ValueError("value table kind must be c18_block_semantic_value_table")
+        if not table.get("complete", False):
+            raise ValueError("value table is not complete")
+        for key in required_equal:
+            if table.get(key) != first.get(key):
+                raise ValueError(f"value tables disagree on {key}")
+
+
 def _select_block_rows(
     config: FormulaConfig,
     row_kind: str,
@@ -906,6 +1078,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _merge_key_manifest_main(args_list[1:])
     if args_list and args_list[0] == "assemble-rank":
         return _assemble_rank_main(args_list[1:])
+    if args_list and args_list[0] == "assemble-combined-rank":
+        return _assemble_combined_rank_main(args_list[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.print_help()
     return 2
@@ -1056,6 +1230,26 @@ def _assemble_rank_main(argv: Sequence[str] | None) -> int:
     return 0
 
 
+def _assemble_combined_rank_main(argv: Sequence[str] | None) -> int:
+    parser = argparse.ArgumentParser(description="Assemble combined c18 block rank")
+    parser.add_argument("tables", nargs="+", type=Path)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--stop-rank", type=int, default=None)
+    parser.add_argument("--left-nullspace", action="store_true")
+    parser.add_argument("--store-matrix", action="store_true")
+    args = parser.parse_args(argv)
+
+    payload = assemble_combined_block_rank_from_value_tables(
+        args.tables,
+        output_path=args.output,
+        stop_rank=args.stop_rank,
+        compute_left_nullspace=args.left_nullspace,
+        store_matrix=args.store_matrix,
+    )
+    print(json.dumps(_summary(payload), indent=2, sort_keys=True))
+    return 0
+
+
 def _summary(payload: dict[str, object]) -> dict[str, object]:
     keys = (
         "kind",
@@ -1071,11 +1265,13 @@ def _summary(payload: dict[str, object]) -> dict[str, object]:
         "row_count",
         "available_column_count",
         "column_count",
+        "column_kinds",
         "entry_count",
         "unsupported_entries",
         "key_count",
         "chunk_count",
         "chunk_id",
+        "table_count",
         "processed_columns",
         "rank",
         "left_nullity",
