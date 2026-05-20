@@ -132,3 +132,16 @@ def test_fast_console_script_is_registered():
         'rank7-c18-fast-semantic = "rank7_jk_fast.semantic_pipeline:main"'
         in pyproject_text
     )
+
+
+def test_fast_bouchet_helper_scripts_exist_and_are_executable():
+    root = Path(__file__).resolve().parents[1]
+    scripts = [
+        root / "scripts/bouchet/plan_c18_fast_scout_suite.sh",
+        root / "scripts/bouchet/submit_c18_fast_scout.sbatch",
+        root / "scripts/bouchet/assemble_c18_fast_scout.sh",
+    ]
+
+    for script in scripts:
+        assert script.exists()
+        assert script.stat().st_mode & 0o111
