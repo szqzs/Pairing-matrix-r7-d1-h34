@@ -158,6 +158,11 @@ Use a fresh output path for each scout.  Do not resume a sequential checkpoint
 with a different column order; the checkpoint prefix order is part of the
 state.
 
+For wider gamma-sensitive sweeps, prefer the block semantic table workflow in
+`docs/C18_BLOCK_SEMANTIC_TABLE_RUNBOOK.md`.  It evaluates semantic keys in a
+Slurm array and assembles rank centrally, which is better suited to comparing
+`gamma x f2-power`, `gamma x one-f`, and `even x one-gamma` blocks.
+
 ## 8. Bring Results Back To The Mac
 
 From the Mac:

@@ -76,6 +76,25 @@ def test_block_probe_real_tiny_f2_power_path_runs():
     assert payload["semantic_cache_misses"] == 2
 
 
+def test_block_probe_f2_power_balanced_samples_low_powers_early():
+    payload = run_c18_block_probe(
+        prime=101,
+        method="synthetic",
+        row_kind="gamma",
+        column_kind="f2-power",
+        max_rows=2,
+        max_columns=4,
+        column_order="f2-power-balanced",
+    )
+
+    assert [column["defect"] for column in payload["columns"]] == [
+        "f2^1",
+        "f2^2",
+        "f2^3",
+        "f2^4",
+    ]
+
+
 def test_block_probe_reports_unsupported_gamma_one_gamma_by_default():
     with pytest.raises(UnsupportedBlockEntry):
         run_c18_block_probe(

@@ -548,7 +548,47 @@ def _ordered_columns(
             pairs,
             key_fn=lambda item: _column_balance_key(exterior, item[1]),
         )
-    raise ValueError("column_order must be sequential, random, or balanced")
+    if order in {"f2-power-balanced", "f2-balanced"}:
+        return _f2_power_round_robin_order(indices, columns, reverse=False)
+    if order in {"f2-power-desc-balanced", "f2-desc-balanced"}:
+        return _f2_power_round_robin_order(indices, columns, reverse=True)
+    raise ValueError(
+        "column_order must be sequential, random, balanced, "
+        "f2-power-balanced, or f2-power-desc-balanced"
+    )
+
+
+def _f2_power_round_robin_order(
+    indices: Sequence[int],
+    columns: Sequence[H62TestColumn],
+    *,
+    reverse: bool,
+) -> list[tuple[int, H62TestColumn]]:
+    if any(column.kind != "f2_power" for column in columns):
+        raise ValueError("f2-power-balanced column order requires f2-power columns")
+    groups: dict[int, list[tuple[int, H62TestColumn]]] = {}
+    for index, column in zip(indices, columns):
+        groups.setdefault(_f2_power(column), []).append((int(index), column))
+    for power, group in list(groups.items()):
+        groups[power] = _middle_out(group)
+    ordered: list[tuple[int, H62TestColumn]] = []
+    powers = sorted(groups, reverse=reverse)
+    depth = 0
+    while True:
+        added = False
+        for power in powers:
+            group = groups[power]
+            if depth < len(group):
+                ordered.append(group[depth])
+                added = True
+        if not added:
+            break
+        depth += 1
+    return ordered
+
+
+def _f2_power(column: H62TestColumn) -> int:
+    return int(column.monomial.f_exp[0])
 
 
 def _balanced_order(items, *, key_fn):
@@ -650,7 +690,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-columns", type=int, default=20)
     parser.add_argument(
         "--column-order",
-        choices=("sequential", "random", "balanced"),
+        choices=(
+            "sequential",
+            "random",
+            "balanced",
+            "f2-balanced",
+            "f2-desc-balanced",
+            "f2-power-balanced",
+            "f2-power-desc-balanced",
+        ),
         default="balanced",
     )
     parser.add_argument("--column-random-seed", type=int, default=0)
