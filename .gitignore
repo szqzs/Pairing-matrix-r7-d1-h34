@@ -3,8 +3,11 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+*.swp
 *.py[cod]
 *.egg-info/
 dist/
 build/
 artifacts/math_gates/*.json
+logs/
+results/

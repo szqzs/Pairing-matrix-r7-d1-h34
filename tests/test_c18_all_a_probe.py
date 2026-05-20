@@ -4,9 +4,12 @@ import pytest
 
 from rank7_jk.c18_all_a_probe import (
     actual_all_a_column,
+    batched_semantic_all_a_column,
+    benchmark_all_a_defects,
     evaluator_by_name,
     main,
     run_all_a_probe,
+    semantic_actual_all_a_column,
     slow_actual_all_a_column,
     synthetic_all_a_column,
 )
@@ -82,6 +85,8 @@ def test_evaluator_name_dispatch_is_explicit():
     assert evaluator_by_name("synthetic") is synthetic_all_a_column
     assert evaluator_by_name("actual") is actual_all_a_column
     assert evaluator_by_name("moment") is actual_all_a_column
+    assert evaluator_by_name("semantic") is semantic_actual_all_a_column
+    assert evaluator_by_name("semantic-batched") is batched_semantic_all_a_column
     assert evaluator_by_name("slow-actual") is slow_actual_all_a_column
 
     with pytest.raises(ValueError, match="unknown"):
@@ -113,3 +118,34 @@ def test_cli_writes_probe_and_timing_json(tmp_path):
     assert payload["test_column_indices"] == [0, 1]
     assert timing["processed_columns"] == 2
     assert "cache_info" in timing
+
+
+def test_probe_checkpoint_records_partial_rank_state(tmp_path):
+    checkpoint_path = tmp_path / "checkpoint.json"
+
+    result = run_all_a_probe(
+        prime=101,
+        evaluator=synthetic_all_a_column,
+        max_columns=3,
+        checkpoint_path=checkpoint_path,
+        checkpoint_interval=2,
+    )
+
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert result.processed_columns == 3
+    assert payload["processed_columns"] == 3
+    assert payload["rank"] == 3
+    assert payload["selected_column_indices"] == [0, 1, 2]
+
+
+def test_defect_benchmark_can_emit_empty_semantic_block():
+    payload = benchmark_all_a_defects(
+        prime=101,
+        defects=("f2",),
+        max_columns=0,
+        method="moment",
+    )
+
+    assert payload["defects"] == ["f2"]
+    assert payload["benchmarks"][0]["defect"] == "f2"
+    assert payload["benchmarks"][0]["processed_columns"] == 0

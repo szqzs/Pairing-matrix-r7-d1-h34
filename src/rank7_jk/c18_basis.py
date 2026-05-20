@@ -16,7 +16,7 @@ from .config import FormulaConfig, RANK7_G2_D1
 from .invariants import InvariantMonomial
 
 SourceKind = Literal["even", "gamma"]
-TestKind = Literal["all_a", "one_f"]
+TestKind = Literal["all_a", "one_f", "one_gamma", "one_b_pair", "f2_power"]
 
 
 @dataclass(frozen=True)
@@ -35,9 +35,14 @@ class H62TestColumn:
     kind: TestKind
     monomial: InvariantMonomial
     defect: str | None = None
+    b_labels: Tuple[Tuple[int, int], ...] = ()
 
     @property
     def name(self) -> str:
+        if self.b_labels:
+            b_part = " ".join(f"b{r}_{j}" for r, j in self.b_labels)
+            monomial = str(self.monomial)
+            return b_part if monomial == "1" else f"{monomial} {b_part}"
         return str(self.monomial)
 
 
@@ -97,6 +102,74 @@ def h62_one_f_test_columns(config: FormulaConfig = RANK7_G2_D1) -> Tuple[H62Test
                     defect=f"f{r}",
                 )
             )
+    return tuple(columns)
+
+
+def h62_f2_power_test_columns(config: FormulaConfig = RANK7_G2_D1) -> Tuple[H62TestColumn, ...]:
+    """Return defect-rich H62 tests ``a^alpha f2^k`` with ``k >= 1``.
+
+    The rank-5 regression minor shows that high powers of ``f2`` are often the
+    first place where nonzero pairings appear.  We therefore list the highest
+    ``f2`` powers first, while keeping the all-a ``k = 0`` block separate.
+    """
+
+    if config.rank != 7 or config.genus != 2:
+        raise ValueError("the H62 fast test basis is currently specialized to rank 7 genus 2")
+    columns = []
+    for f2_power in range(31, 0, -1):
+        for a_parts in restricted_partitions(31 - f2_power, config.class_ranks):
+            f_exp = [0 for _ in config.class_ranks]
+            f_exp[0] = f2_power
+            columns.append(
+                H62TestColumn(
+                    kind="f2_power",
+                    monomial=InvariantMonomial.from_exponents(
+                        config,
+                        a_exp=a_exp_from_parts(config, a_parts),
+                        f_exp=f_exp,
+                    ),
+                    defect=f"f2^{f2_power}",
+                )
+            )
+    return tuple(columns)
+
+
+def h62_one_gamma_test_columns(config: FormulaConfig = RANK7_G2_D1) -> Tuple[H62TestColumn, ...]:
+    if config.rank != 7 or config.genus != 2:
+        raise ValueError("the H62 fast test basis is currently specialized to rank 7 genus 2")
+    columns = []
+    for r, s in config.gamma_labels:
+        # H62 has ordinary/2 = 31, and gamma_rs contributes ordinary/2 = r+s-1.
+        for a_parts in restricted_partitions(32 - r - s, config.class_ranks):
+            columns.append(
+                H62TestColumn(
+                    kind="one_gamma",
+                    monomial=_monomial(config, a_parts, gamma_label=(r, s)),
+                    defect=f"gamma{r}{s}",
+                )
+            )
+    return tuple(columns)
+
+
+def h62_one_b_pair_test_columns(config: FormulaConfig = RANK7_G2_D1) -> Tuple[H62TestColumn, ...]:
+    if config.rank != 7 or config.genus != 2:
+        raise ValueError("the H62 fast test basis is currently specialized to rank 7 genus 2")
+    columns = []
+    labels = config.b_labels
+    for left_idx, left in enumerate(labels):
+        for right in labels[left_idx + 1 :]:
+            r, _i = left
+            s, _j = right
+            # H62 has ordinary/2 = 31, and b_r b_s contributes r+s-1.
+            for a_parts in restricted_partitions(32 - r - s, config.class_ranks):
+                columns.append(
+                    H62TestColumn(
+                        kind="one_b_pair",
+                        monomial=_monomial(config, a_parts),
+                        defect=f"b{left[0]}_{left[1]}*b{right[0]}_{right[1]}",
+                        b_labels=(left, right),
+                    )
+                )
     return tuple(columns)
 
 

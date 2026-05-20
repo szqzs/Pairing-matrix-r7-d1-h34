@@ -3,7 +3,10 @@ from rank7_jk.c18_basis import (
     c18_gamma_source_rows,
     c18_source_rows,
     h62_all_a_test_columns,
+    h62_f2_power_test_columns,
+    h62_one_b_pair_test_columns,
     h62_one_f_test_columns,
+    h62_one_gamma_test_columns,
     restricted_partitions,
 )
 from rank7_jk.config import RANK7_G2_D1
@@ -76,4 +79,53 @@ def test_h62_one_f_test_columns_are_the_first_finish_candidate_block():
         assert column.monomial.ordinary_degree == 62
         assert column.monomial.chern_degree == 32
         assert sum(column.monomial.f_exp) == 1
+        assert not any(column.monomial.gamma_exp)
+
+
+def test_h62_f2_power_test_columns_prioritize_high_f2_powers():
+    columns = h62_f2_power_test_columns()
+
+    assert len(columns) == 1824
+    assert columns[0].name == "f2^31"
+    assert columns[1].name == "a2 f2^29"
+    assert columns[-1].name == "a6^5 f2"
+    for column in columns:
+        assert column.kind == "f2_power"
+        assert column.defect and column.defect.startswith("f2^")
+        assert column.monomial.ordinary_degree == 62
+        assert sum(column.monomial.f_exp) >= 1
+        assert column.monomial.f_exp[0] >= 1
+        assert not any(column.monomial.f_exp[1:])
+        assert not any(column.monomial.gamma_exp)
+
+
+def test_h62_one_gamma_test_columns_have_expected_shape():
+    columns = h62_one_gamma_test_columns()
+
+    assert len(columns) == 2172
+    assert columns[0].name == "a2^14 gamma22"
+    assert columns[-1].name == "a6^3 gamma77"
+    for column in columns:
+        assert column.kind == "one_gamma"
+        assert column.defect and column.defect.startswith("gamma")
+        assert column.monomial.ordinary_degree == 62
+        assert column.monomial.chern_degree == 32
+        assert not any(column.monomial.f_exp)
+        assert sum(column.monomial.gamma_exp) == 1
+
+
+def test_h62_one_b_pair_test_columns_have_expected_shape():
+    columns = h62_one_b_pair_test_columns()
+
+    assert len(columns) == 28222
+    assert columns[0].name == "a2^14 b2_1 b2_2"
+    assert columns[-1].name == "a6^3 b7_3 b7_4"
+    for column in columns[:20] + columns[-20:]:
+        assert column.kind == "one_b_pair"
+        assert column.defect and column.defect.startswith("b")
+        assert len(column.b_labels) == 2
+        assert column.monomial.ordinary_degree + sum(
+            2 * r - 1 for r, _j in column.b_labels
+        ) == 62
+        assert not any(column.monomial.f_exp)
         assert not any(column.monomial.gamma_exp)

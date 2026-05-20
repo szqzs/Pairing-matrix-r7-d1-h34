@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import Callable, Sequence, Tuple
 
 from .all_a_pairing import (
+    AllASemanticBatchEvaluator,
     all_a_cache_info,
     c18_all_a_pairing_column,
     c18_all_a_pairing_column_moment,
+    c18_all_a_pairing_column_semantic,
 )
 from .c18_basis import C18SourceRow, H62TestColumn, c18_source_rows, h62_all_a_test_columns
 from .config import FormulaConfig, RANK7_G2_D1
@@ -97,6 +99,8 @@ def run_all_a_probe(
     end_column: int | None = None,
     max_columns: int | None = None,
     store_selected_vectors: bool = False,
+    checkpoint_path: Path | None = None,
+    checkpoint_interval: int = 1,
     rows: Sequence[C18SourceRow] | None = None,
     columns: Sequence[H62TestColumn] | None = None,
 ) -> AllAProbeResult:
@@ -127,6 +131,7 @@ def run_all_a_probe(
     column_seconds = []
     start = time.perf_counter()
     column_name_by_index = dict(zip(test_column_indices, (column.name for column in test_columns)))
+    last_checkpoint_processed = 0
     for index, column in zip(test_column_indices, test_columns):
         if stop_rank is not None and tracker.rank >= stop_rank:
             break
@@ -138,9 +143,45 @@ def run_all_a_probe(
         column_seconds.append(time.perf_counter() - column_start)
         if independent and selected_vectors is not None:
             selected_vectors[index] = vector
+        if checkpoint_path is not None and checkpoint_interval > 0:
+            if tracker.processed_columns % checkpoint_interval == 0:
+                _write_probe_checkpoint(
+                    checkpoint_path,
+                    prime=p,
+                    evaluator_name=_evaluator_name(column_evaluator),
+                    row_kind=row_kind,
+                    row_count=len(source_rows),
+                    column_count=len(test_columns),
+                    processed_columns=tracker.processed_columns,
+                    source_row_indices=source_row_indices,
+                    test_column_indices=test_column_indices,
+                    tracker=tracker,
+                    column_seconds=column_seconds,
+                    column_name_by_index=column_name_by_index,
+                    start_time=start,
+                    selected_vectors=selected_vectors,
+                )
+                last_checkpoint_processed = tracker.processed_columns
 
     selected_indices = tuple(tracker.selected_indices)
     elapsed = time.perf_counter() - start
+    if checkpoint_path is not None and tracker.processed_columns != last_checkpoint_processed:
+        _write_probe_checkpoint(
+            checkpoint_path,
+            prime=p,
+            evaluator_name=_evaluator_name(column_evaluator),
+            row_kind=row_kind,
+            row_count=len(source_rows),
+            column_count=len(test_columns),
+            processed_columns=tracker.processed_columns,
+            source_row_indices=source_row_indices,
+            test_column_indices=test_column_indices,
+            tracker=tracker,
+            column_seconds=column_seconds,
+            column_name_by_index=column_name_by_index,
+            start_time=start,
+            selected_vectors=selected_vectors,
+        )
     return AllAProbeResult(
         prime=p,
         evaluator_name=_evaluator_name(column_evaluator),
@@ -191,6 +232,62 @@ def actual_all_a_column(
     return c18_all_a_pairing_column_moment(index, column, rows, prime)
 
 
+def semantic_actual_all_a_column(
+    index: int,
+    column: H62TestColumn,
+    rows: Sequence[C18SourceRow],
+    prime: int,
+) -> Tuple[int, ...]:
+    """Evaluate one all-a column with semantic ``(defect,total_a)`` caching."""
+
+    return c18_all_a_pairing_column_semantic(index, column, rows, prime)
+
+
+def batched_semantic_all_a_column(
+    index: int,
+    column: H62TestColumn,
+    rows: Sequence[C18SourceRow],
+    prime: int,
+) -> Tuple[int, ...]:
+    """Evaluate one all-a column with semantic caching and beta batching."""
+
+    return c18_all_a_pairing_column_semantic(
+        index,
+        column,
+        rows,
+        prime,
+        method="batched",
+    )
+
+
+def make_semantic_all_a_column(
+    *,
+    method: str = "moment",
+    semantic_cache_maxsize: int | None = None,
+    moment_cache_clear_size: int | None = None,
+) -> AllAColumnEvaluator:
+    """Build a semantic evaluator closure with explicit cache controls."""
+
+    def _semantic_column(
+        index: int,
+        column: H62TestColumn,
+        rows: Sequence[C18SourceRow],
+        prime: int,
+    ) -> Tuple[int, ...]:
+        return c18_all_a_pairing_column_semantic(
+            index,
+            column,
+            rows,
+            prime,
+            method=method,
+            semantic_cache_maxsize=semantic_cache_maxsize,
+            moment_cache_clear_size=moment_cache_clear_size,
+        )
+
+    _semantic_column.__name__ = f"semantic_{method}_all_a_column"
+    return _semantic_column
+
+
 def slow_actual_all_a_column(
     index: int,
     column: H62TestColumn,
@@ -207,16 +304,143 @@ def evaluator_by_name(name: str) -> AllAColumnEvaluator:
         return synthetic_all_a_column
     if name in {"actual", "moment"}:
         return actual_all_a_column
+    if name == "semantic":
+        return semantic_actual_all_a_column
+    if name == "semantic-batched":
+        return batched_semantic_all_a_column
     if name == "slow-actual":
         return slow_actual_all_a_column
     raise ValueError(f"unknown all-a evaluator backend {name!r}")
+
+
+def benchmark_all_a_defects(
+    *,
+    config: FormulaConfig = RANK7_G2_D1,
+    prime: int | None = None,
+    defects: Sequence[str] = (),
+    method: str = "moment",
+    row_kind: str = "even",
+    start_row: int = 0,
+    end_row: int | None = None,
+    max_rows: int | None = None,
+    start_column: int = 0,
+    end_column: int | None = None,
+    max_columns: int | None = None,
+    semantic_cache_maxsize: int | None = None,
+    moment_cache_clear_size: int | None = None,
+) -> dict[str, object]:
+    """Benchmark semantic all-a evaluation one defect block at a time."""
+
+    p = require_prime(config.primary_prime if prime is None else prime)
+    source_rows, source_row_indices = _select_rows(
+        config,
+        row_kind,
+        None,
+        start_row=start_row,
+        end_row=end_row,
+        max_rows=max_rows,
+    )
+    test_columns, test_column_indices = _select_columns(
+        config,
+        None,
+        start_column=start_column,
+        end_column=end_column,
+        max_columns=max_columns,
+    )
+    if defects:
+        defect_order = tuple(defects)
+    else:
+        defect_order = tuple(dict.fromkeys(row.defect for row in source_rows))
+
+    benchmark_payloads = []
+    total_start = time.perf_counter()
+    for defect in defect_order:
+        indexed_rows = tuple(
+            (idx, row)
+            for idx, row in zip(source_row_indices, source_rows)
+            if row.defect == defect
+        )
+        if not indexed_rows:
+            benchmark_payloads.append(
+                {
+                    "defect": defect,
+                    "row_count": 0,
+                    "column_count": len(test_columns),
+                    "processed_columns": 0,
+                    "rank": 0,
+                    "left_nullity": 0,
+                    "elapsed_seconds": 0.0,
+                    "column_seconds": [],
+                    "semantic_cache": {
+                        "hits": 0,
+                        "misses": 0,
+                        "maxsize": 0,
+                        "currsize": 0,
+                    },
+                }
+            )
+            continue
+
+        row_indices = tuple(idx for idx, _row in indexed_rows)
+        rows = tuple(row for _idx, row in indexed_rows)
+        evaluator = AllASemanticBatchEvaluator(
+            config=config,
+            rows=rows,
+            prime=p,
+            method=method,
+            semantic_cache_maxsize=semantic_cache_maxsize,
+            moment_cache_clear_size=moment_cache_clear_size,
+        )
+        tracker = ColumnRankTracker(row_count=len(rows), prime=p)
+        column_seconds = []
+        start = time.perf_counter()
+        for index, column in zip(test_column_indices, test_columns):
+            column_start = time.perf_counter()
+            vector = tuple(int(value) % p for value in evaluator.column_vector(index, column))
+            tracker.add_column(vector, index=index)
+            column_seconds.append(time.perf_counter() - column_start)
+        elapsed = time.perf_counter() - start
+        benchmark_payloads.append(
+            {
+                "defect": defect,
+                "row_count": len(rows),
+                "row_indices": list(row_indices),
+                "column_count": len(test_columns),
+                "test_column_indices": list(test_column_indices),
+                "processed_columns": tracker.processed_columns,
+                "rank": tracker.rank,
+                "left_nullity": tracker.nullity_left,
+                "elapsed_seconds": elapsed,
+                "column_seconds": column_seconds,
+                "semantic_cache": evaluator.cache_info(),
+            }
+        )
+
+    return {
+        "prime": p,
+        "method": method,
+        "row_kind": row_kind,
+        "defects": list(defect_order),
+        "elapsed_seconds": time.perf_counter() - total_start,
+        "git_head": _git_head(),
+        "git_dirty": _git_dirty(),
+        "cache_info": all_a_cache_info(),
+        "benchmarks": benchmark_payloads,
+    }
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--backend",
-        choices=("synthetic", "actual", "moment", "slow-actual"),
+        choices=(
+            "synthetic",
+            "actual",
+            "moment",
+            "semantic",
+            "semantic-batched",
+            "slow-actual",
+        ),
         default="synthetic",
         help="column evaluator backend to use",
     )
@@ -280,6 +504,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="include original selected column vectors in the JSON result",
     )
     parser.add_argument(
+        "--semantic-cache-max-size",
+        type=int,
+        default=None,
+        help="semantic value LRU size; use -1 for unbounded and 0 to disable",
+    )
+    parser.add_argument(
+        "--moment-cache-clear-size",
+        type=int,
+        default=None,
+        help="clear scalar moment cache whenever it reaches this many entries",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="write resumability metadata after streamed column batches",
+    )
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=1,
+        help="number of processed columns between checkpoint writes",
+    )
+    parser.add_argument(
+        "--benchmark-defects",
+        nargs="*",
+        default=None,
+        help="benchmark selected defects instead of running one combined probe",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=None,
@@ -293,9 +547,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.backend == "semantic":
+        evaluator = make_semantic_all_a_column(
+            method="moment",
+            semantic_cache_maxsize=args.semantic_cache_max_size,
+            moment_cache_clear_size=args.moment_cache_clear_size,
+        )
+    elif args.backend == "semantic-batched":
+        evaluator = make_semantic_all_a_column(
+            method="batched",
+            semantic_cache_maxsize=args.semantic_cache_max_size,
+            moment_cache_clear_size=args.moment_cache_clear_size,
+        )
+    else:
+        evaluator = evaluator_by_name(args.backend)
+
+    if args.benchmark_defects is not None:
+        payload = benchmark_all_a_defects(
+            prime=args.prime,
+            defects=tuple(args.benchmark_defects),
+            method="batched" if args.backend == "semantic-batched" else "moment",
+            row_kind=args.row_kind,
+            start_row=args.start_row,
+            end_row=args.end_row,
+            max_rows=args.max_rows,
+            start_column=args.start_column,
+            end_column=args.end_column,
+            max_columns=args.max_columns,
+            semantic_cache_maxsize=args.semantic_cache_max_size,
+            moment_cache_clear_size=args.moment_cache_clear_size,
+        )
+        if args.output is not None:
+            _write_json(args.output, payload)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+
     result = run_all_a_probe(
         prime=args.prime,
-        evaluator=evaluator_by_name(args.backend),
+        evaluator=evaluator,
         stop_rank=args.stop_rank,
         row_kind=args.row_kind,
         start_row=args.start_row,
@@ -305,6 +594,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         end_column=args.end_column,
         max_columns=args.max_columns,
         store_selected_vectors=args.store_selected_vectors,
+        checkpoint_path=args.checkpoint,
+        checkpoint_interval=args.checkpoint_interval,
     )
     payload = result.to_dict()
     if args.output is not None:
@@ -393,6 +684,56 @@ def _select_columns(
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_probe_checkpoint(
+    path: Path,
+    *,
+    prime: int,
+    evaluator_name: str,
+    row_kind: str,
+    row_count: int,
+    column_count: int,
+    processed_columns: int,
+    source_row_indices: Tuple[int, ...],
+    test_column_indices: Tuple[int, ...],
+    tracker: ColumnRankTracker,
+    column_seconds: Sequence[float],
+    column_name_by_index: dict[int, str],
+    start_time: float,
+    selected_vectors: dict[int, Tuple[int, ...]] | None,
+) -> None:
+    selected_indices = tuple(tracker.selected_indices)
+    payload = {
+        "prime": prime,
+        "evaluator_name": evaluator_name,
+        "row_kind": row_kind,
+        "row_count": row_count,
+        "column_count": column_count,
+        "processed_columns": processed_columns,
+        "source_row_indices": list(source_row_indices),
+        "test_column_indices": list(test_column_indices),
+        "rank": tracker.rank,
+        "left_nullity": tracker.nullity_left,
+        "selected_column_indices": list(selected_indices),
+        "selected_column_names": [
+            column_name_by_index[index] for index in selected_indices
+        ],
+        "elapsed_seconds": time.perf_counter() - start_time,
+        "column_seconds": list(column_seconds),
+        "cache_info": all_a_cache_info(),
+        "git_head": _git_head(),
+        "git_dirty": _git_dirty(),
+        "selected_column_vectors": (
+            None
+            if selected_vectors is None
+            else {
+                str(index): list(vector)
+                for index, vector in sorted(selected_vectors.items())
+            }
+        ),
+    }
+    _write_json(path, payload)
 
 
 def _git_head() -> str | None:
